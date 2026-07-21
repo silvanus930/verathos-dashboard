@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en" class="dark">
+
+<head>
+  <script>
+    (function () {
+      var t = localStorage.getItem('verathos-theme') || 'dark';
+      if (t === 'system') t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.classList.toggle('dark', t === 'dark');
+    })();
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verathos Dashboard</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="favicon-180.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <div id="toast" class="toast" hidden></div>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">V</span>
+        <span class="brand-name">Verathos</span>
+        <span class="brand-sub">Dashboard</span>
+      </div>
+      <div class="topbar-status">
+        <span id="connStatus" class="pill pill-muted">
+          <span class="dot"></span> connecting…
+        </span>
+        <span id="epochPill" class="pill pill-muted">epoch —</span>
+        <span id="epochCountdownPill" class="pill pill-muted" title="Epochs aren't exposed by the API. Estimated from a fixed ~72-minute tempo, calibrated against a known reference timestamp — may drift slightly from the actual boundary.">
+          next epoch <span id="epochCountdown">—</span>
+        </span>
+        <span id="lastUpdated" class="muted small">—</span>
+        <button id="refreshBtn" class="icon-btn" title="Refresh now">⟳</button>
+        <button id="themeBtn" class="icon-btn" title="Toggle theme">◐</button>
+      </div>
+    </div>
+    <div class="epoch-progress"><div class="epoch-progress-fill" id="epochBarFill"></div></div>
+  </header>
+
+  <main class="container">
+    <div id="errorBanner" class="error-banner" hidden></div>
+
+    <section class="section">
+      <div class="section-header-row">
+        <h2 class="section-title">
+          Miners
+          <span class="page-size-tabs" id="pageSizeTabs">
+            <span class="muted small">Show</span>
+            <button type="button" data-size="10">10</button>
+            <button type="button" data-size="20">20</button>
+            <button type="button" data-size="50">50</button>
+            <button type="button" data-size="all" class="active">All</button>
+          </span>
+          <span id="minerCount" class="muted small"></span>
+        </h2>
+        <div class="controls">
+          <button id="watchedToggle" class="input select watch-toggle-btn" type="button" title="Show only watched UIDs">
+            <span class="star">★</span> Watched (<span id="watchedCount">0</span>)
+          </button>
+          <input id="minerSearch" class="input" type="search" placeholder="Search model, GPU…" />
+          <select id="uidFilter" class="input select">
+            <option value="">All UIDs</option>
+          </select>
+          <select id="modelFilter" class="input select">
+            <option value="">All models</option>
+          </select>
+          <select id="healthFilter" class="input select">
+            <option value="">All health</option>
+            <option value="healthy">Healthy only</option>
+            <option value="unhealthy">Unhealthy only</option>
+          </select>
+          <select id="flagFilter" class="input select">
+            <option value="">No flag filter</option>
+            <option value="probation">On probation</option>
+            <option value="blacklisted">Blacklisted</option>
+            <option value="tee">TEE enabled</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table sortable" id="minersTable">
+          <thead>
+            <tr>
+              <th class="watch-col">Watch</th>
+              <th>Miner</th>
+              <th data-key="uid">UID</th>
+              <th data-key="model_id">Model</th>
+              <th data-key="gpu_name">GPU</th>
+              <th data-key="healthy">Health</th>
+              <th data-key="score">Score</th>
+              <th data-key="organic_requests">Reqs</th>
+              <th data-key="avg_tok_s">Avg tok/s</th>
+              <th class="status-col">Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Validators</h2>
+      <div class="table-wrap">
+        <table class="data-table" id="validatorsTable">
+          <thead>
+            <tr>
+              <th>UID</th>
+              <th>Address</th>
+              <th>SS58</th>
+              <th>Stake (τ)</th>
+              <th>Proxy Endpoint</th>
+              <th>Status</th>
+              <th>Registered</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Network</h2>
+      <div id="networkStats" class="stat-grid"></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Usage</h2>
+      <div id="usageStats" class="stat-grid"></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">x402 &amp; Payments</h2>
+      <div id="paymentStats" class="stat-grid"></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Models</h2>
+      <div id="modelsGrid" class="models-grid"></div>
+    </section>
+
+    <footer class="footer">
+      <span class="muted small">Unofficial clone dashboard · data from <code>/api/dashboard</code></span>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
