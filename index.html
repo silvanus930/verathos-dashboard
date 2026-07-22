@@ -98,10 +98,34 @@
               <th data-key="organic_requests">Reqs</th>
               <th data-key="avg_tok_s">Avg tok/s</th>
               <th class="status-col">Status</th>
+              <th class="debug-col">Debug</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="section" id="minerDebugSection">
+      <div class="section-header-row">
+        <h2 class="section-title">Miner Debug</h2>
+        <a class="muted small" href="https://api.verathos.ai/v1/miner-debug/help" target="_blank" rel="noopener noreferrer">API schema &amp; examples ↗</a>
+      </div>
+      <div class="debug-panel">
+        <p class="muted small">
+          Public, read-only diagnostics for any UID — identity, capacity-audit gate, probation, canary/proof
+          results, model/GPU eligibility, and recommended next steps. Cached by a validator, so data may lag
+          slightly.
+        </p>
+        <form id="debugLookupForm" class="debug-lookup-form">
+          <input id="debugUidInput" class="input" type="number" min="0" inputmode="numeric" placeholder="UID" required />
+          <input id="debugModelIndexInput" class="input" type="number" min="0" inputmode="numeric" placeholder="Model index (optional)" />
+          <select id="debugWindowSelect" class="input select">
+            <option value="24" selected>Last 24h</option>
+            <option value="48">Last 48h</option>
+          </select>
+          <button type="submit" class="btn">Debug UID</button>
+        </form>
       </div>
     </section>
 
@@ -149,6 +173,26 @@
       <span class="muted small">Unofficial clone dashboard · data from <code>/api/dashboard</code></span>
     </footer>
   </main>
+
+  <div id="debugModalOverlay" class="modal-overlay" hidden>
+    <div class="debug-modal" role="dialog" aria-modal="true" aria-labelledby="debugModalTitle">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="debugModalTitle">Miner Debug</h3>
+          <span id="debugModalSubtitle" class="muted small"></span>
+        </div>
+        <div class="modal-header-actions">
+          <select id="debugModalWindowSelect" class="input select small-select" title="Diagnostic window">
+            <option value="24">24h</option>
+            <option value="48">48h</option>
+          </select>
+          <button id="debugModalRefresh" class="icon-btn" title="Refresh">⟳</button>
+          <button id="debugModalClose" class="icon-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div id="debugModalBody" class="modal-body"></div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

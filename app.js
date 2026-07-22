@@ -118,6 +118,536 @@ function setConnStatus(ok) {
   pill.innerHTML = `<span class="dot"></span> ${ok ? 'connected' : 'disconnected'}`;
 }
 
+// ---------- miner debug ----------
+const MINER_DEBUG_BASE = '/api/miner-debug';
+
+const ISSUE_CODE_INFO = {
+  healthy: { label: 'Healthy', sev: 'good', desc: 'No obvious issue in the cached window.' },
+  new_entry_not_scored: { label: 'Not scored yet', sev: 'info', desc: 'The active endpoint has not closed a scored epoch yet.' },
+  local_weight_not_reflected: { label: 'Weight not reflected', sev: 'info', desc: "This validator's positive last weight is not yet reflected by the cached metagraph incentive." },
+  chat_unauthorized: { label: 'Chat 401', sev: 'bad', desc: 'The endpoint is reachable but /chat returns 401 to validator canaries.' },
+  chat_forbidden: { label: 'Chat 403', sev: 'bad', desc: 'The endpoint is reachable but /chat returns 403 to validator canaries.' },
+  chat_not_found: { label: 'Chat 404', sev: 'bad', desc: 'The endpoint is reachable but /chat route is missing.' },
+  timeout: { label: 'Timeout', sev: 'warn', desc: 'Recent inference/canary request timed out.' },
+  connection_failed: { label: 'Connection failed', sev: 'bad', desc: 'Recent inference/canary request could not connect.' },
+  tls_error: { label: 'TLS error', sev: 'bad', desc: 'Recent inference/canary request failed TLS/certificate validation.' },
+  on_probation: { label: 'On probation', sev: 'warn', desc: 'One or more endpoint entries are on probation.' },
+  capacity_audit_failures: { label: 'Capacity-audit failures', sev: 'warn', desc: 'Recent capacity-audit failures remain in the scoring lookback.' },
+  uid_audit_gate_active: { label: 'UID audit gate active', sev: 'bad', desc: 'UID-level capacity-audit floor is active.' },
+  recent_endpoint_churn: { label: 'Recent endpoint churn', sev: 'info', desc: 'Recent inactive/stale endpoint entries still affect interpretation.' },
+  stale_uid_identity: { label: 'Stale UID identity', sev: 'warn', desc: 'An old EVM address is stale for the current UID owner.' },
+  blacklisted: { label: 'Blacklisted', sev: 'bad', desc: 'The current miner address is blacklisted by subnet configuration.' },
+  model_gate_active: { label: 'Model gate active', sev: 'warn', desc: 'The executor fails the current model/GPU capacity gate.' },
+  proof_failure: { label: 'Proof failure', sev: 'bad', desc: 'A recent synthetic canary proof failed verification.' },
+  tee_failure: { label: 'TEE failure', sev: 'bad', desc: 'A recent TEE attestation failed verification.' },
+  no_active_endpoint: { label: 'No active endpoint', sev: 'bad', desc: 'No active endpoint is present for this UID.' },
+};
+
+function issueInfo(code) {
+  return ISSUE_CODE_INFO[code] || { label: code, sev: 'warn', desc: '' };
+}
+function sevIcon(sev) {
+  return { good: '✓', info: 'i', warn: '!', bad: '✕' }[sev] || '•';
+}
+
+const debugState = {
+  uid: null,
+  modelIndex: null,
+  windowH: 24,
+  kind: 'uid',
+  loading: false,
+  error: null,
+  raw: null,
+  payload: null,
+};
+
+async function fetchMinerDebugRaw(path) {
+  const res = await fetch(MINER_DEBUG_BASE + path, { headers: { Accept: 'application/json' } });
+  let body = null;
+  try { body = await res.json(); } catch (_) { /* non-JSON error body */ }
+  if (!res.ok) {
+    const err = new Error((body && body.error) || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+function fetchMinerDebugUid(uid, windowH) {
+  return fetchMinerDebugRaw(`/${uid}?window_h=${windowH}`);
+}
+function fetchMinerDebugEntry(uid, modelIndex, windowH) {
+  return fetchMinerDebugRaw(`/${uid}/entries/${modelIndex}?window_h=${windowH}`);
+}
+
+function normalizeDebugPayload(raw, kind) {
+  const d = raw.data || {};
+  const base = {
+    epochNumber: raw.epoch_number,
+    cacheStaleS: raw.cache_stale_s,
+  };
+  if (kind === 'uid') {
+    return {
+      ...base,
+      primaryIssue: d.primary_issue,
+      identity: d.identity,
+      summary: d.summary,
+      network: d.network,
+      uidGate: d.uid_gate,
+      hints: d.hints,
+      nextSteps: d.next_steps,
+      entries: d.entries || [],
+    };
+  }
+  return {
+    ...base,
+    primaryIssue: d.uid_primary_issue,
+    identity: null,
+    summary: d.uid_summary,
+    network: d.uid_network,
+    uidGate: d.uid_gate,
+    hints: d.uid_hints,
+    nextSteps: [],
+    entries: d.entries || [],
+  };
+}
+
+function openDebugModal(uid, modelIndex, windowH) {
+  debugState.uid = uid;
+  debugState.modelIndex = modelIndex ?? null;
+  debugState.windowH = windowH || 24;
+  $('#debugModalWindowSelect').value = String(debugState.windowH);
+  $('#debugModalOverlay').hidden = false;
+  document.body.style.overflow = 'hidden';
+  loadDebugModal();
+}
+
+function closeDebugModal() {
+  $('#debugModalOverlay').hidden = true;
+  document.body.style.overflow = '';
+}
+
+async function loadDebugModal() {
+  debugState.loading = true;
+  debugState.error = null;
+  renderDebugModalTitle();
+  renderDebugModalBody();
+  try {
+    const { uid, modelIndex, windowH } = debugState;
+    let raw, kind;
+    if (modelIndex !== null && modelIndex !== undefined) {
+      raw = await fetchMinerDebugEntry(uid, modelIndex, windowH);
+      kind = 'entry';
+    } else {
+      raw = await fetchMinerDebugUid(uid, windowH);
+      kind = 'uid';
+    }
+    debugState.raw = raw;
+    debugState.kind = kind;
+    debugState.payload = normalizeDebugPayload(raw, kind);
+  } catch (err) {
+    debugState.error = err;
+    debugState.payload = null;
+  } finally {
+    debugState.loading = false;
+    renderDebugModalTitle();
+    renderDebugModalBody();
+  }
+}
+
+function renderDebugModalTitle() {
+  const title = $('#debugModalTitle');
+  const sub = $('#debugModalSubtitle');
+  title.textContent = (debugState.modelIndex !== null && debugState.modelIndex !== undefined)
+    ? `UID ${debugState.uid} · Model #${debugState.modelIndex}`
+    : `UID ${debugState.uid} · Overview`;
+  if (debugState.payload) {
+    const g = debugState.payload;
+    const parts = [`epoch ${fmtInt(g.epochNumber)}`];
+    if (g.cacheStaleS != null) parts.push(`cache ${Math.round(g.cacheStaleS)}s old`);
+    sub.textContent = parts.join(' · ');
+  } else {
+    sub.textContent = '';
+  }
+}
+
+function debugLoadingNode() {
+  const wrap = el('div', 'debug-loading');
+  wrap.appendChild(el('div', 'debug-spinner'));
+  wrap.appendChild(el('div', null, 'Fetching diagnostics…'));
+  return wrap;
+}
+
+function debugErrorNode(err) {
+  const wrap = el('div', 'debug-error');
+  let msg = err.message || String(err);
+  if (err.status === 404) msg = `Not found: ${msg}. The UID/model index isn't in the validator's debug cache.`;
+  else if (err.status === 503) msg = `Debug cache not ready yet: ${msg}`;
+  else if (!err.status) msg = `${msg}. Make sure you're running the included proxy: python3 server.py`;
+  wrap.textContent = msg;
+  return wrap;
+}
+
+function issueBannerNode(code) {
+  const info = issueInfo(code || 'healthy');
+  const wrap = el('div', `debug-issue-banner sev-${info.sev}`);
+  wrap.appendChild(el('span', 'sev-icon', sevIcon(info.sev)));
+  const text = el('div', 'sev-text');
+  text.appendChild(el('div', null, info.label));
+  if (info.desc) text.appendChild(el('div', 'sev-sub', info.desc));
+  wrap.appendChild(text);
+  return wrap;
+}
+
+function issueChipNode(code) {
+  const info = issueInfo(code);
+  const chip = el('span', `issue-chip sev-${info.sev}`, info.label);
+  if (info.desc) chip.title = info.desc;
+  return chip;
+}
+
+function kvCard(title, rows) {
+  const card = el('div', 'debug-card');
+  card.appendChild(el('h4', null, title));
+  rows.forEach(([label, value]) => {
+    const row = el('div', 'debug-kv');
+    row.appendChild(el('span', null, label));
+    row.appendChild(el('b', null, value === null || value === undefined ? '—' : String(value)));
+    card.appendChild(row);
+  });
+  return card;
+}
+
+function summaryGridNode(summary, network) {
+  const grid = el('div', 'debug-grid');
+  summary = summary || {};
+  network = network || {};
+  grid.appendChild(kvCard('Summary', [
+    ['Active entries', fmtInt(summary.active_entries)],
+    ['Recent entries', fmtInt(summary.recent_entries)],
+    ['Inactive recent', fmtInt(summary.inactive_recent_entries)],
+    ['On probation', fmtInt(summary.entries_on_probation)],
+    ['Best score', summary.best_score != null ? summary.best_score.toFixed(4) : '—'],
+    ['Latest scored epoch', fmtInt(summary.latest_scored_epoch)],
+  ]));
+  grid.appendChild(kvCard('Network (this validator)', [
+    ['Last weight set', network.last_validator_weight != null ? network.last_validator_weight.toFixed(6) : '—'],
+    ['Metagraph incentive', network.metagraph_incentive != null ? network.metagraph_incentive.toFixed(6) : '—'],
+    ['Metagraph emission', network.metagraph_emission != null ? network.metagraph_emission.toFixed(6) : '—'],
+    ['Metagraph trust', network.metagraph_trust != null ? network.metagraph_trust.toFixed(6) : '—'],
+    ['Metagraph consensus', network.metagraph_consensus != null ? network.metagraph_consensus.toFixed(6) : '—'],
+    ['Metagraph block', fmtInt(network.metagraph_block)],
+  ]));
+  return grid;
+}
+
+function identityCardNode(identity) {
+  return kvCard('Identity', [
+    ['Hotkey', fmtTruncated(identity.hotkey_ss58, 8, 6)],
+    ['EVM address', fmtTruncated(identity.evm_address, 8, 6)],
+    ['Generation', fmtInt(identity.generation)],
+    ['Identity start epoch', fmtInt(identity.identity_start_epoch)],
+  ]);
+}
+
+function uidGateNode(gate) {
+  gate = gate || {};
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'debug-section-title', 'UID Capacity-Audit Gate'));
+  const grid = el('div', 'debug-grid');
+  const th = gate.thresholds || {};
+  grid.appendChild(kvCard('Gate status', [
+    ['Active', gate.active ? 'Yes' : 'No'],
+    ['Enabled', gate.enabled ? 'Yes' : 'No'],
+    ['Convicted / entries', `${fmtInt(gate.convicted_entries)} / ${fmtInt(gate.entry_count)}`],
+    ['Quorum', fmtInt(gate.quorum)],
+    ['Since epoch', fmtInt(gate.since_epoch)],
+    ['Next clear epoch', gate.next_possible_clear_epoch != null ? fmtInt(gate.next_possible_clear_epoch) : '—'],
+    ['Est. hours remaining', gate.estimated_hours_remaining_if_clean ? gate.estimated_hours_remaining_if_clean.toFixed(1) + 'h' : '—'],
+  ]));
+  grid.appendChild(kvCard('Thresholds', [
+    ['Invalid proof misses', fmtInt(th.invalid_proof_misses)],
+    ['Hard proof misses', fmtInt(th.hard_proof_misses)],
+    ['Timing misses', fmtInt(th.timing_misses)],
+    ['Timing-only allowed', th.timing_only_allowed ? 'Yes' : 'No'],
+    ['UID min entries', fmtInt(th.uid_min_entries)],
+    ['UID fraction', th.uid_fraction != null ? fmtPct(th.uid_fraction * 100) : '—'],
+    ['UID max entries', fmtInt(th.uid_max_entries)],
+  ]));
+  wrap.appendChild(grid);
+
+  if (gate.convicted && gate.convicted.length) {
+    const tableWrap = el('div', 'table-wrap debug-table-wrap');
+    const table = el('table', 'data-table');
+    const thead = el('thead');
+    const htr = el('tr');
+    ['Model idx', 'Reasons', 'Next clear epoch', 'Epochs left', 'Est. hours'].forEach((h) => htr.appendChild(el('th', null, h)));
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    gate.convicted.forEach((c) => {
+      const tr = el('tr');
+      tr.appendChild(el('td', 'mono', c.model_index));
+      tr.appendChild(el('td', null, (c.active_reasons || []).join(', ') || '—'));
+      tr.appendChild(el('td', null, c.next_possible_clear_epoch != null ? fmtInt(c.next_possible_clear_epoch) : '—'));
+      tr.appendChild(el('td', null, fmtInt(c.epochs_remaining_if_clean)));
+      tr.appendChild(el('td', null, c.estimated_hours_remaining_if_clean != null ? c.estimated_hours_remaining_if_clean.toFixed(1) + 'h' : '—'));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    wrap.appendChild(tableWrap);
+  }
+  return wrap;
+}
+
+function entriesListNode(entries) {
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'debug-section-title', `Entries (${entries.length})`));
+  const tableWrap = el('div', 'table-wrap debug-table-wrap');
+  const table = el('table', 'data-table');
+  const thead = el('thead');
+  const htr = el('tr');
+  ['Model idx', 'Model', 'GPU', 'Score', 'Active', 'Issue', ''].forEach((h) => htr.appendChild(el('th', null, h)));
+  thead.appendChild(htr);
+  table.appendChild(thead);
+  const tbody = el('tbody');
+  entries.forEach((entry) => {
+    const tr = el('tr');
+    tr.appendChild(el('td', 'mono', entry.model_index));
+    const modelTd = el('td');
+    modelTd.appendChild(el('span', 'cell-main', (entry.model_id || '—').split('/').pop()));
+    modelTd.title = entry.model_id || '';
+    tr.appendChild(modelTd);
+    tr.appendChild(el('td', null, entry.gpu_name || '—'));
+    tr.appendChild(el('td', null, entry.score != null ? entry.score.toFixed(3) : '—'));
+    const activeTd = el('td');
+    activeTd.appendChild(el('span', `health-dot ${entry.active ? 'up' : 'down'}`));
+    tr.appendChild(activeTd);
+    const issueTd = el('td');
+    const codes = entry.issue_codes && entry.issue_codes.length ? entry.issue_codes : ['healthy'];
+    codes.forEach((c) => issueTd.appendChild(issueChipNode(c)));
+    tr.appendChild(issueTd);
+    const actionTd = el('td');
+    const btn = el('button', 'debug-btn', 'Details →');
+    btn.type = 'button';
+    btn.addEventListener('click', () => {
+      debugState.modelIndex = entry.model_index;
+      loadDebugModal();
+    });
+    actionTd.appendChild(btn);
+    tr.appendChild(actionTd);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+  wrap.appendChild(tableWrap);
+  return wrap;
+}
+
+function backToOverviewButtonNode() {
+  const btn = el('button', 'btn btn-ghost debug-back-btn', '← Back to UID overview');
+  btn.type = 'button';
+  btn.addEventListener('click', () => {
+    debugState.modelIndex = null;
+    loadDebugModal();
+  });
+  return btn;
+}
+
+function capacityAuditNode(ca) {
+  if (!ca) return el('div');
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'debug-section-title', 'Capacity Audit'));
+
+  const gs = ca.gate_status || {};
+  const grid = el('div', 'debug-grid');
+  grid.appendChild(kvCard('Audit totals', [
+    ['Total', fmtInt(ca.total)],
+    ['Timing pass / excused / miss', `${fmtInt(ca.timing_pass)} / ${fmtInt(ca.timing_excused)} / ${fmtInt(ca.timing_miss)}`],
+    ['Hard proof miss', fmtInt(ca.hard_proof_miss)],
+    ['No-show', fmtInt(ca.no_show)],
+    ['Pending', fmtInt(ca.pending)],
+  ]));
+  grid.appendChild(kvCard('Gate status', [
+    ['Active', gs.active ? 'Yes' : 'No'],
+    ['Since epoch', fmtInt(gs.since_epoch)],
+    ['Next clear epoch', gs.next_possible_clear_epoch != null ? fmtInt(gs.next_possible_clear_epoch) : '—'],
+    ['Epochs left', fmtInt(gs.epochs_remaining_if_clean)],
+    ['Est. hours remaining', gs.estimated_hours_remaining_if_clean != null ? gs.estimated_hours_remaining_if_clean.toFixed(1) + 'h' : '—'],
+    ['Reasons', (gs.active_reasons || []).join(', ') || '—'],
+  ]));
+  wrap.appendChild(grid);
+
+  if (ca.failure_reasons && Object.keys(ca.failure_reasons).length) {
+    const chipsWrap = el('div', 'debug-issue-chips');
+    Object.entries(ca.failure_reasons).forEach(([reason, count]) => {
+      chipsWrap.appendChild(el('span', 'issue-chip sev-warn', `${reason} ×${count}`));
+    });
+    wrap.appendChild(chipsWrap);
+  }
+
+  if (ca.recent_failures && ca.recent_failures.length) {
+    const tableWrap = el('div', 'table-wrap debug-table-wrap');
+    const table = el('table', 'data-table');
+    const thead = el('thead');
+    const htr = el('tr');
+    ['Epoch', 'Verdict', 'Timing', 'Proof', 'Reason'].forEach((h) => htr.appendChild(el('th', null, h)));
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    ca.recent_failures.forEach((f) => {
+      const tr = el('tr');
+      tr.appendChild(el('td', 'mono', f.epoch));
+      tr.appendChild(el('td', null, f.verdict || '—'));
+      tr.appendChild(el('td', null, f.timing_status || '—'));
+      tr.appendChild(el('td', null, f.proof_status || '—'));
+      tr.appendChild(el('td', null, f.failure_reason || '—'));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    wrap.appendChild(tableWrap);
+  }
+  return wrap;
+}
+
+function entryDeepDiveNode(entry) {
+  const wrap = el('div');
+
+  const header = el('div', 'debug-entry-header');
+  header.appendChild(el('div', 'cell-main', entry.model_id || '—'));
+  header.appendChild(el('div', 'cell-sub mono', entry.endpoint || ''));
+  const chipsRow = el('div', 'debug-entry-chips');
+  chipsRow.appendChild(badge(entry.active ? 'active' : 'inactive', entry.active ? 'green' : 'gray'));
+  if (entry.stale) chipsRow.appendChild(badge('stale', 'amber'));
+  if (entry.blacklisted) chipsRow.appendChild(badge('blacklisted', 'red'));
+  if (entry.model_gate && entry.model_gate.active) chipsRow.appendChild(badge('model gate active', 'red'));
+  header.appendChild(chipsRow);
+  wrap.appendChild(header);
+
+  const codes = entry.issue_codes && entry.issue_codes.length ? entry.issue_codes : ['healthy'];
+  const chipsWrap = el('div', 'debug-issue-chips');
+  codes.forEach((c) => chipsWrap.appendChild(issueChipNode(c)));
+  wrap.appendChild(chipsWrap);
+
+  const probation = entry.probation || {};
+  const canary = entry.canary || {};
+  const receipts = entry.receipts || {};
+  const lastScore = entry.last_score || {};
+
+  const grid = el('div', 'debug-grid');
+  grid.appendChild(kvCard('Score', [
+    ['Score', entry.score != null ? entry.score.toFixed(4) : '—'],
+    ['EMA score', entry.ema_score != null ? entry.ema_score.toFixed(4) : '—'],
+    ['Total / scored epochs', `${fmtInt(entry.total_epochs)} / ${fmtInt(entry.scored_epochs)}`],
+    ['First seen epoch', fmtInt(entry.first_seen_epoch)],
+    ['Last seen epoch', fmtInt(entry.last_seen_epoch)],
+  ]));
+  grid.appendChild(kvCard('Probation', [
+    ['Active', probation.active ? 'Yes' : 'No'],
+    ['Entered epoch', probation.entered_epoch != null ? fmtInt(probation.entered_epoch) : '—'],
+    ['Consecutive passes', fmtInt(probation.consecutive_passes)],
+    ['Required passes', fmtInt(probation.required_passes)],
+    ['Remaining if clean', fmtInt(probation.passes_remaining_if_clean)],
+  ]));
+  grid.appendChild(kvCard('Canary checks', [
+    ['Total / OK', `${fmtInt(canary.total)} / ${fmtInt(canary.ok)}`],
+    ['Errors', fmtInt(canary.errors)],
+    ['Proof req / verified / fail', `${fmtInt(canary.proof_requested)} / ${fmtInt(canary.proof_verified)} / ${fmtInt(canary.proof_failures)}`],
+    ['TEE req / verified / fail', `${fmtInt(canary.tee_requested)} / ${fmtInt(canary.tee_verified)} / ${fmtInt(canary.tee_failures)}`],
+    ['Last status', canary.last_status || '—'],
+    ['Last error kind', canary.last_error_kind || '—'],
+  ]));
+  grid.appendChild(kvCard('Receipts', [
+    ['Receipts', fmtInt(receipts.receipts)],
+    ['Canary receipts', fmtInt(receipts.canary_receipts)],
+    ['Own receipts', fmtInt(receipts.own_receipts)],
+    ['Proof req / verified', `${fmtInt(receipts.proof_requested)} / ${fmtInt(receipts.proof_verified)}`],
+    ['Avg tok/s', receipts.avg_tok_s != null ? receipts.avg_tok_s.toFixed(1) : '—'],
+  ]));
+  grid.appendChild(kvCard('Last closed epoch', [
+    ['Epoch', fmtInt(lastScore.last_scored_epoch)],
+    ['Epoch score', lastScore.epoch_score != null ? lastScore.epoch_score.toFixed(4) : '—'],
+    ['EMA score', lastScore.ema_score != null ? lastScore.ema_score.toFixed(4) : '—'],
+    ['Own / all / expected receipts', `${fmtInt(lastScore.own_receipts)} / ${fmtInt(lastScore.all_receipts)} / ${fmtInt(lastScore.expected_receipts)}`],
+    ['Proof tests / fail', `${fmtInt(lastScore.proof_tests)} / ${fmtInt(lastScore.proof_failures)}`],
+    ['TEE tests / fail / verified', `${fmtInt(lastScore.tee_tests)} / ${fmtInt(lastScore.tee_failures)} / ${lastScore.tee_verified ? 'Yes' : 'No'}`],
+  ]));
+  wrap.appendChild(grid);
+
+  wrap.appendChild(capacityAuditNode(entry.capacity_audit));
+
+  if (entry.next_steps && entry.next_steps.length) wrap.appendChild(nextStepsNode(entry.next_steps));
+
+  return wrap;
+}
+
+function hintsNode(hints) {
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'debug-section-title', 'Hints'));
+  const ul = el('ul', 'debug-list');
+  hints.forEach((h) => {
+    const li = el('li', null, typeof h === 'string' ? h : h.message);
+    ul.appendChild(li);
+  });
+  wrap.appendChild(ul);
+  return wrap;
+}
+
+function nextStepsNode(steps) {
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'debug-section-title', 'Recommended next steps'));
+  const ul = el('ul', 'debug-list');
+  steps.forEach((s) => ul.appendChild(el('li', null, s)));
+  wrap.appendChild(ul);
+  return wrap;
+}
+
+function rawJsonNode(raw) {
+  const details = el('details', 'debug-raw');
+  details.appendChild(el('summary', null, 'Raw JSON response'));
+  const pre = el('pre', null, JSON.stringify(raw, null, 2));
+  details.appendChild(pre);
+  return details;
+}
+
+function renderDebugModalBody() {
+  const body = $('#debugModalBody');
+  body.innerHTML = '';
+
+  if (debugState.loading && !debugState.payload) {
+    body.appendChild(debugLoadingNode());
+    return;
+  }
+  if (debugState.error) {
+    body.appendChild(debugErrorNode(debugState.error));
+    return;
+  }
+  if (!debugState.payload) return;
+
+  const g = debugState.payload;
+
+  body.appendChild(issueBannerNode(g.primaryIssue));
+
+  if (g.identity) body.appendChild(identityCardNode(g.identity));
+
+  body.appendChild(summaryGridNode(g.summary, g.network));
+
+  if (debugState.kind === 'entry' && g.entries.length) {
+    body.appendChild(backToOverviewButtonNode());
+    body.appendChild(entryDeepDiveNode(g.entries[0]));
+  } else if (g.entries.length) {
+    body.appendChild(entriesListNode(g.entries));
+  }
+
+  body.appendChild(uidGateNode(g.uidGate));
+
+  if (g.hints && g.hints.length) body.appendChild(hintsNode(g.hints));
+  if (g.nextSteps && g.nextSteps.length) body.appendChild(nextStepsNode(g.nextSteps));
+
+  body.appendChild(rawJsonNode(debugState.raw));
+}
+
 function showError(err) {
   const banner = $('#errorBanner');
   banner.hidden = false;
@@ -429,6 +959,16 @@ function renderMinersTable() {
     statusTd.appendChild(el('span', `status-pill ${statusClass}`, statusLabel));
     tr.appendChild(statusTd);
 
+    const debugTd = el('td', 'debug-col');
+    if (m.uid !== null && m.uid !== undefined && m.model_index !== null && m.model_index !== undefined) {
+      const debugBtn = el('button', 'debug-btn', 'Debug');
+      debugBtn.type = 'button';
+      debugBtn.title = `Debug UID ${m.uid} · model #${m.model_index}`;
+      debugBtn.addEventListener('click', () => openDebugModal(m.uid, m.model_index, 24));
+      debugTd.appendChild(debugBtn);
+    }
+    tr.appendChild(debugTd);
+
     tbody.appendChild(tr);
   });
 
@@ -499,6 +1039,29 @@ function initEvents() {
       }
       renderMinersTable();
     });
+  });
+
+  $('#debugLookupForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const uid = parseInt($('#debugUidInput').value, 10);
+    if (Number.isNaN(uid)) return;
+    const miRaw = $('#debugModelIndexInput').value.trim();
+    const modelIndex = miRaw === '' ? null : parseInt(miRaw, 10);
+    const windowH = parseInt($('#debugWindowSelect').value, 10);
+    openDebugModal(uid, modelIndex, windowH);
+  });
+
+  $('#debugModalClose').addEventListener('click', closeDebugModal);
+  $('#debugModalOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#debugModalOverlay')) closeDebugModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('#debugModalOverlay').hidden) closeDebugModal();
+  });
+  $('#debugModalRefresh').addEventListener('click', () => loadDebugModal());
+  $('#debugModalWindowSelect').addEventListener('change', (e) => {
+    debugState.windowH = parseInt(e.target.value, 10);
+    loadDebugModal();
   });
 }
 

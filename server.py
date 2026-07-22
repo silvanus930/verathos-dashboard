@@ -9,14 +9,19 @@ Usage: python3 server.py [port]
 """
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 UPSTREAM = "https://verathos.ai/api/dashboard"
+MINER_DEBUG_UPSTREAM_BASE = "https://api.verathos.ai/v1/miner-debug"
+MINER_DEBUG_PATH_RE = re.compile(r'^/api/miner-debug/(\d+)(?:/entries/(\d+))?$')
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 
 
@@ -50,6 +55,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/dashboard"):
             self.proxy_dashboard()
+        elif self.path.startswith("/api/miner-debug/"):
+            self.proxy_miner_debug()
         else:
             super().do_GET()
 
@@ -59,6 +66,27 @@ class Handler(SimpleHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = resp.read()
             self.send_json(200, body)
+        except Exception as exc:
+            self.send_json(502, json.dumps({"error": f"proxy failed: {exc}"}).encode())
+
+    def proxy_miner_debug(self):
+        """Proxies the public miner-debug API (also lacks CORS headers)."""
+        split = urlsplit(self.path)
+        m = MINER_DEBUG_PATH_RE.match(split.path)
+        if not m:
+            self.send_json(400, json.dumps({"error": "invalid miner-debug path"}).encode())
+            return
+        uid, model_index = m.groups()
+        upstream_path = f"/{uid}" + (f"/entries/{model_index}" if model_index else "")
+        upstream_url = MINER_DEBUG_UPSTREAM_BASE + upstream_path
+        if split.query:
+            upstream_url += f"?{split.query}"
+        try:
+            req = urllib.request.Request(upstream_url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                self.send_json(resp.status, resp.read())
+        except urllib.error.HTTPError as exc:
+            self.send_json(exc.code, exc.read())
         except Exception as exc:
             self.send_json(502, json.dumps({"error": f"proxy failed: {exc}"}).encode())
 
