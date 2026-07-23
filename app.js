@@ -1,6 +1,6 @@
 'use strict';
 
-const IS_EXTENSION = window.location.protocol === 'chrome-extension:';
+const IS_EXTENSION = typeof chrome !== 'undefined' && Boolean(chrome.runtime && chrome.runtime.id);
 const API_CANDIDATES = IS_EXTENSION
   ? ['https://verathos.ai/api/dashboard']
   : ['/api/dashboard', 'https://verathos.ai/api/dashboard'];
