@@ -1,6 +1,9 @@
 'use strict';
 
-const API_CANDIDATES = ['/api/dashboard', 'https://verathos.ai/api/dashboard'];
+const IS_EXTENSION = window.location.protocol === 'chrome-extension:';
+const API_CANDIDATES = IS_EXTENSION
+  ? ['https://verathos.ai/api/dashboard']
+  : ['/api/dashboard', 'https://verathos.ai/api/dashboard'];
 const REFRESH_MS = 5 * 60 * 1000;
 
 // Epoch timing isn't exposed by the API. Anchored against a known reference
@@ -119,7 +122,9 @@ function setConnStatus(ok) {
 }
 
 // ---------- miner debug ----------
-const MINER_DEBUG_BASE = '/api/miner-debug';
+const MINER_DEBUG_BASE = IS_EXTENSION
+  ? 'https://api.verathos.ai/v1/miner-debug'
+  : '/api/miner-debug';
 
 const ISSUE_CODE_INFO = {
   healthy: { label: 'Healthy', sev: 'good', desc: 'No obvious issue in the cached window.' },

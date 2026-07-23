@@ -2,13 +2,7 @@
 <html lang="en" class="dark">
 
 <head>
-  <script>
-    (function () {
-      var t = localStorage.getItem('verathos-theme') || 'dark';
-      if (t === 'system') t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      document.documentElement.classList.toggle('dark', t === 'dark');
-    })();
-  </script>
+  <script src="theme-init.js"></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Verathos Dashboard</title>

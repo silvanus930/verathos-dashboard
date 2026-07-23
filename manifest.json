@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Verathos Dashboard Plus",
+  "version": "1.1.0",
+  "description": "Shows the enhanced dashboard when you visit verathos.ai/dashboard.",
+  "icons": {
+    "32": "favicon-32.png",
+    "180": "favicon-180.png"
+  },
+  "action": {
+    "default_title": "Open Verathos Dashboard",
+    "default_icon": {
+      "32": "favicon-32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "https://verathos.ai/*",
+    "https://api.verathos.ai/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://verathos.ai/*"
+      ],
+      "js": [
+        "override-dashboard.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "index.html",
+        "theme-init.js",
+        "app.js",
+        "style.css",
+        "favicon.svg",
+        "favicon-32.png",
+        "favicon-180.png"
+      ],
+      "matches": [
+        "https://verathos.ai/*"
+      ]
+    }
+  ]
+}
