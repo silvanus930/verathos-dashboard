@@ -683,6 +683,26 @@ function activeWatchGroup() {
   return state.watchGroups.find((group) => group.id === state.activeWatchGroupId) || null;
 }
 
+function setWatchedOnly(enabled) {
+  state.showWatchedOnly = enabled;
+  $('#watchedToggle')?.classList.toggle('active', enabled);
+}
+
+function watchedGroupScore(group) {
+  if (!state.miners.length || !group?.uids?.length) return null;
+  const uids = new Set(group.uids);
+  return state.miners.reduce((total, miner) => {
+    if (!uids.has(miner.uid) || typeof miner.score !== 'number' || Number.isNaN(miner.score)) return total;
+    return total + miner.score;
+  }, 0);
+}
+
+function watchGroupLabel(group) {
+  const base = `${group.name} (${group.uids.length})`;
+  const score = watchedGroupScore(group);
+  return score === null ? base : `${base} - ${score.toFixed(1)}`;
+}
+
 function loadWatchlist() {
   try {
     const saved = JSON.parse(localStorage.getItem(WATCHGROUPS_LOCAL_KEY) || 'null');
@@ -738,7 +758,7 @@ function renderWatchGroupSelect() {
   state.watchGroups.forEach((group) => {
     const option = el('option');
     option.value = group.id;
-    option.textContent = `${group.name} (${group.uids.length})`;
+    option.textContent = watchGroupLabel(group);
     select.appendChild(option);
   });
   select.value = state.activeWatchGroupId || '';
@@ -749,8 +769,8 @@ function selectWatchGroup(groupId) {
   if (!group) return;
   state.activeWatchGroupId = group.id;
   state.watched = new Set(group.uids);
-  state.showWatchedOnly = false;
-  $('#watchedToggle').classList.remove('active');
+  $('#uidFilter').value = '';
+  setWatchedOnly(true);
   updateWatchedCount();
   saveWatchlist();
   renderMinersTable();
@@ -773,8 +793,8 @@ function createWatchGroup(name, uids) {
   state.watchGroups.push(group);
   state.activeWatchGroupId = group.id;
   state.watched = new Set(uids);
-  state.showWatchedOnly = false;
-  $('#watchedToggle').classList.remove('active');
+  $('#uidFilter').value = '';
+  setWatchedOnly(true);
   renderWatchGroupSelect();
   updateWatchedCount();
   saveWatchlist();
@@ -822,8 +842,8 @@ function deleteActiveWatchGroup() {
   const nextGroup = state.watchGroups[Math.min(groupIndex, state.watchGroups.length - 1)];
   state.activeWatchGroupId = nextGroup.id;
   state.watched = new Set(nextGroup.uids);
-  state.showWatchedOnly = false;
-  $('#watchedToggle').classList.remove('active');
+  $('#uidFilter').value = '';
+  setWatchedOnly(true);
   renderWatchGroupSelect();
   updateWatchedCount();
   saveWatchlist();
@@ -1353,6 +1373,7 @@ function render(data) {
   state.miners = data.miners.map(normalizeMiner);
   populateUidFilter(state.miners);
   populateModelFilter(state.miners);
+  renderWatchGroupSelect();
   renderMinersTable();
   checkForNewProbations();
 }
@@ -1396,8 +1417,7 @@ function initEvents() {
   });
 
   $('#watchedToggle').addEventListener('click', () => {
-    state.showWatchedOnly = !state.showWatchedOnly;
-    $('#watchedToggle').classList.toggle('active', state.showWatchedOnly);
+    setWatchedOnly(!state.showWatchedOnly);
     renderMinersTable();
   });
   $('#watchGroupSelect').addEventListener('change', (e) => selectWatchGroup(e.target.value));
@@ -1425,7 +1445,10 @@ function initEvents() {
   });
 
   $('#minerSearch').addEventListener('input', () => renderMinersTable());
-  $('#uidFilter').addEventListener('change', () => renderMinersTable());
+  $('#uidFilter').addEventListener('change', (e) => {
+    if (e.target.value !== '') setWatchedOnly(false);
+    renderMinersTable();
+  });
   $('#modelFilter').addEventListener('change', () => renderMinersTable());
   $('#healthFilter').addEventListener('change', () => renderMinersTable());
   $('#flagFilter').addEventListener('change', () => renderMinersTable());
