@@ -32,6 +32,7 @@
         </span>
         <span id="lastUpdated" class="muted small">—</span>
         <button id="refreshBtn" class="icon-btn" title="Refresh now">⟳</button>
+        <button id="settingsBtn" class="icon-btn" type="button" title="Telegram alert settings" aria-label="Telegram alert settings">⚙</button>
         <button id="themeBtn" class="icon-btn" title="Toggle theme">◐</button>
       </div>
     </div>
@@ -55,10 +56,20 @@
           <span id="minerCount" class="muted small"></span>
         </h2>
         <div class="controls">
+          <select id="watchGroupSelect" class="input select watch-group-select" aria-label="Active watched group" title="Choose a watched group"></select>
+          <button id="newWatchGroupBtn" class="input watch-group-action" type="button" title="Add watched group" aria-label="Add watched group">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button id="editWatchGroupBtn" class="input watch-group-action watch-group-edit" type="button" title="Edit selected watched group" aria-label="Edit selected watched group">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/><path d="m14 7 3 3"/></svg>
+          </button>
+          <button id="deleteWatchGroupBtn" class="input watch-group-action watch-group-delete" type="button" title="Delete selected watched group" aria-label="Delete selected watched group">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg>
+          </button>
           <button id="watchedToggle" class="input watch-toggle-btn" type="button" title="Show only watched UIDs">
             <span class="star">★</span> Watched (<span id="watchedCount">0</span>)
           </button>
-          <input id="minerSearch" class="input" type="search" placeholder="Search model, GPU…" />
+          <input id="minerSearch" class="input" type="search" placeholder="Search hotkey, model, GPU…" />
           <select id="uidFilter" class="input select">
             <option value="">All UIDs</option>
           </select>
@@ -167,6 +178,55 @@
       <span class="muted small">Unofficial clone dashboard · data from <code>/api/dashboard</code></span>
     </footer>
   </main>
+
+  <div id="settingsModalOverlay" class="modal-overlay" hidden>
+    <div class="debug-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="settingsModalTitle">Telegram alerts</h3>
+          <span class="muted small">Get notified when a watched miner enters probation.</span>
+        </div>
+        <button id="settingsModalClose" class="icon-btn" type="button" title="Close">×</button>
+      </div>
+      <form id="telegramSettingsForm" class="modal-body settings-form">
+        <label for="telegramBotToken">Telegram bot token</label>
+        <input id="telegramBotToken" class="input" type="password" autocomplete="off" placeholder="123456789:AA…" required />
+        <span class="muted small">Create the bot with @BotFather. The token is stored only in this browser.</span>
+        <label for="telegramChatId">Telegram chat ID</label>
+        <input id="telegramChatId" class="input" type="text" autocomplete="off" placeholder="e.g. 123456789 or -100…" required />
+        <span class="muted small">Start a chat with the bot first, or add it to the target group/channel.</span>
+        <div id="telegramConnectionStatus" class="connection-status" role="status" hidden></div>
+        <div class="watch-group-form-actions">
+          <button id="telegramSettingsCancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button id="telegramConnectBtn" class="btn" type="submit">Connect &amp; send test</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="watchGroupModalOverlay" class="modal-overlay" hidden>
+    <div class="debug-modal watch-group-modal" role="dialog" aria-modal="true" aria-labelledby="watchGroupModalTitle">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="watchGroupModalTitle">New watched group</h3>
+          <span id="watchGroupModalSubtitle" class="muted small">Save a named set of miner UIDs in this browser.</span>
+        </div>
+        <button id="watchGroupModalClose" class="icon-btn" type="button" title="Close">×</button>
+      </div>
+      <form id="watchGroupForm" class="modal-body watch-group-form">
+        <label for="watchGroupName">Group or user name</label>
+        <input id="watchGroupName" class="input" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Alice validators" required />
+        <label for="watchGroupUids">Watched UIDs</label>
+        <textarea id="watchGroupUids" class="input watch-group-uids" rows="4" placeholder="e.g. 12, 48, 103" aria-describedby="watchGroupUidsHelp"></textarea>
+        <span id="watchGroupUidsHelp" class="muted small">Separate UIDs with commas, spaces, or new lines. You can add more later with the stars in the table.</span>
+        <div id="watchGroupError" class="form-error" role="alert" hidden></div>
+        <div class="watch-group-form-actions">
+          <button id="watchGroupCancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button id="watchGroupSubmit" class="btn" type="submit">Create group</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <div id="debugModalOverlay" class="modal-overlay" hidden>
     <div class="debug-modal" role="dialog" aria-modal="true" aria-labelledby="debugModalTitle">

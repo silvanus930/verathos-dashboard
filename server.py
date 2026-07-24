@@ -16,12 +16,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 UPSTREAM = "https://verathos.ai/api/dashboard"
 MINER_DEBUG_UPSTREAM_BASE = "https://api.verathos.ai/v1/miner-debug"
 MINER_DEBUG_PATH_RE = re.compile(r'^/api/miner-debug/(\d+)(?:/entries/(\d+))?$')
+TELEGRAM_SEND_PATH = "/api/telegram/send-message"
+TELEGRAM_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 
 
@@ -60,6 +62,12 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
+    def do_POST(self):
+        if urlsplit(self.path).path == TELEGRAM_SEND_PATH:
+            self.send_telegram_message()
+        else:
+            self.send_json(404, json.dumps({"error": "not found"}).encode())
+
     def proxy_dashboard(self):
         try:
             req = urllib.request.Request(UPSTREAM, headers={"Accept": "application/json"})
@@ -89,6 +97,51 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(exc.code, exc.read())
         except Exception as exc:
             self.send_json(502, json.dumps({"error": f"proxy failed: {exc}"}).encode())
+
+    def send_telegram_message(self):
+        """Sends Telegram messages without exposing the bot API to browser CORS."""
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 65536:
+            self.send_json(400, json.dumps({"error": "invalid request size"}).encode())
+            return
+
+        try:
+            payload = json.loads(self.rfile.read(content_length))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_json(400, json.dumps({"error": "invalid JSON body"}).encode())
+            return
+
+        token = str(payload.get("bot_token", "")).strip()
+        chat_id = str(payload.get("chat_id", "")).strip()
+        text = str(payload.get("text", ""))
+        if not TELEGRAM_TOKEN_RE.fullmatch(token):
+            self.send_json(400, json.dumps({"error": "invalid Telegram bot token"}).encode())
+            return
+        if not chat_id or any(char.isspace() for char in chat_id):
+            self.send_json(400, json.dumps({"error": "invalid Telegram chat ID"}).encode())
+            return
+        if not text or len(text) > 4096:
+            self.send_json(400, json.dumps({"error": "message must contain 1-4096 characters"}).encode())
+            return
+
+        upstream_url = f"https://api.telegram.org/bot{quote(token, safe=':')}/sendMessage"
+        upstream_body = json.dumps({"chat_id": chat_id, "text": text}).encode()
+        request = urllib.request.Request(
+            upstream_url,
+            data=upstream_body,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                self.send_json(response.status, response.read())
+        except urllib.error.HTTPError as exc:
+            self.send_json(exc.code, exc.read())
+        except Exception as exc:
+            self.send_json(502, json.dumps({"error": f"Telegram request failed: {exc}"}).encode())
 
     def send_json(self, status, body):
         self.send_response(status)

@@ -157,6 +157,11 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas
 }
 .icon-btn:hover { background: var(--secondary); border-color: color-mix(in oklch, var(--primary) 40%, var(--border)); transform: translateY(-1px); }
 .icon-btn:active { transform: translateY(0); }
+.icon-btn.configured {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success) 45%, var(--border));
+  background: color-mix(in oklch, var(--success) 10%, var(--card));
+}
 
 .muted { color: var(--muted-foreground); }
 .small { font-size: .78rem; }
@@ -367,6 +372,37 @@ html.dark .select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%239aa1ac' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 #minerSearch { min-width: 220px; }
+
+.watch-group-select { min-width: 180px; max-width: 260px; }
+.watch-group-action {
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--primary);
+}
+.watch-group-action svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.watch-group-action:hover {
+  background: color-mix(in oklch, var(--primary) 10%, var(--card));
+}
+.watch-group-edit { color: var(--foreground); }
+.watch-group-delete { color: var(--error); }
+.watch-group-delete:hover {
+  border-color: color-mix(in oklch, var(--error) 45%, var(--border));
+  background: color-mix(in oklch, var(--error) 10%, var(--card));
+}
 
 .watch-toggle-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -589,6 +625,58 @@ html.dark .select {
 .modal-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .small-select { min-width: auto; padding: 5px 26px 5px 12px; font-size: .76rem; }
 .modal-body { padding: 20px 22px 28px; overflow-y: auto; }
+
+.watch-group-modal, .settings-modal { max-width: 520px; }
+.watch-group-form, .settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.watch-group-form label, .settings-form label {
+  font-size: .8rem;
+  font-weight: 800;
+  margin-top: 5px;
+}
+.watch-group-form .input, .settings-form .input {
+  width: 100%;
+  border-radius: var(--radius-sm);
+}
+.watch-group-uids {
+  resize: vertical;
+  min-height: 94px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  line-height: 1.45;
+}
+.form-error {
+  color: var(--error);
+  background: color-mix(in oklch, var(--error) 10%, var(--card));
+  border: 1px solid color-mix(in oklch, var(--error) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  font-size: .8rem;
+}
+.connection-status {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: .8rem;
+}
+.connection-status.success {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success) 40%, var(--border));
+  background: color-mix(in oklch, var(--success) 10%, var(--card));
+}
+.connection-status.error {
+  color: var(--error);
+  border-color: color-mix(in oklch, var(--error) 40%, var(--border));
+  background: color-mix(in oklch, var(--error) 10%, var(--card));
+}
+.watch-group-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 12px;
+}
 
 .debug-back-btn { margin-bottom: 16px; }
 

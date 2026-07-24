@@ -5,6 +5,8 @@ const API_CANDIDATES = IS_EXTENSION
   ? ['https://verathos.ai/api/dashboard']
   : ['/api/dashboard', 'https://verathos.ai/api/dashboard'];
 const REFRESH_MS = 5 * 60 * 1000;
+const TELEGRAM_SETTINGS_LOCAL_KEY = 'verathos-telegram-settings';
+const PROBATION_STATE_LOCAL_KEY = 'verathos-watched-probation-state';
 
 // Epoch timing isn't exposed by the API. Anchored against a known reference
 // point (next epoch boundary observed at 2026-07-21T05:52:36Z) and projected
@@ -19,7 +21,11 @@ const state = {
   sortDir: 'desc',
   pageSize: Infinity,
   watched: new Set(),
+  watchGroups: [],
+  activeWatchGroupId: null,
   showWatchedOnly: false,
+  telegram: { botToken: '', chatId: '' },
+  probationByUid: {},
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -663,17 +669,165 @@ function showError(err) {
 }
 function hideError() { $('#errorBanner').hidden = true; }
 
-// ---------- watchlist (persisted per-browser in localStorage, not shared across devices) ----------
+// ---------- named watch groups (persisted per-browser, not shared across devices) ----------
 const WATCHLIST_LOCAL_KEY = 'verathos-watched-uids';
+const WATCHGROUPS_LOCAL_KEY = 'verathos-watched-groups-v2';
+let editingWatchGroupId = null;
+
+function makeWatchGroupId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `group-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function activeWatchGroup() {
+  return state.watchGroups.find((group) => group.id === state.activeWatchGroupId) || null;
+}
 
 function loadWatchlist() {
-  const raw = localStorage.getItem(WATCHLIST_LOCAL_KEY);
-  state.watched = new Set(raw ? JSON.parse(raw) : []);
+  try {
+    const saved = JSON.parse(localStorage.getItem(WATCHGROUPS_LOCAL_KEY) || 'null');
+    if (saved?.groups?.length) {
+      state.watchGroups = saved.groups
+        .filter((group) => group && typeof group.name === 'string' && Array.isArray(group.uids))
+        .map((group) => ({
+          id: String(group.id || makeWatchGroupId()),
+          name: group.name.trim() || 'Unnamed group',
+          uids: [...new Set(group.uids.filter((uid) => Number.isInteger(uid) && uid >= 0))],
+        }));
+      state.activeWatchGroupId = state.watchGroups.some((group) => group.id === saved.activeGroupId)
+        ? saved.activeGroupId
+        : state.watchGroups[0]?.id;
+    }
+  } catch (err) {
+    console.warn('Could not read saved watched groups:', err);
+  }
+
+  if (!state.watchGroups.length) {
+    let legacyUids = [];
+    try {
+      const legacy = JSON.parse(localStorage.getItem(WATCHLIST_LOCAL_KEY) || '[]');
+      if (Array.isArray(legacy)) legacyUids = legacy.filter((uid) => Number.isInteger(uid) && uid >= 0);
+    } catch (err) {
+      console.warn('Could not migrate the old watchlist:', err);
+    }
+    const initialGroup = { id: makeWatchGroupId(), name: 'My watched miners', uids: [...new Set(legacyUids)] };
+    state.watchGroups = [initialGroup];
+    state.activeWatchGroupId = initialGroup.id;
+  }
+
+  state.watched = new Set(activeWatchGroup()?.uids || []);
+  renderWatchGroupSelect();
   updateWatchedCount();
+  saveWatchlist();
 }
 
 function saveWatchlist() {
-  localStorage.setItem(WATCHLIST_LOCAL_KEY, JSON.stringify([...state.watched]));
+  const group = activeWatchGroup();
+  if (group) group.uids = [...state.watched].sort((a, b) => a - b);
+  localStorage.setItem(WATCHGROUPS_LOCAL_KEY, JSON.stringify({
+    version: 2,
+    activeGroupId: state.activeWatchGroupId,
+    groups: state.watchGroups,
+  }));
+}
+
+function renderWatchGroupSelect() {
+  const select = $('#watchGroupSelect');
+  if (!select) return;
+  select.innerHTML = '';
+  state.watchGroups.forEach((group) => {
+    const option = el('option');
+    option.value = group.id;
+    option.textContent = `${group.name} (${group.uids.length})`;
+    select.appendChild(option);
+  });
+  select.value = state.activeWatchGroupId || '';
+}
+
+function selectWatchGroup(groupId) {
+  const group = state.watchGroups.find((candidate) => candidate.id === groupId);
+  if (!group) return;
+  state.activeWatchGroupId = group.id;
+  state.watched = new Set(group.uids);
+  state.showWatchedOnly = false;
+  $('#watchedToggle').classList.remove('active');
+  updateWatchedCount();
+  saveWatchlist();
+  renderMinersTable();
+}
+
+function parseWatchGroupUids(value) {
+  const tokens = value.trim() ? value.trim().split(/[\s,]+/) : [];
+  const invalid = tokens.filter((token) => !/^\d+$/.test(token));
+  if (invalid.length) throw new Error(`Invalid UID${invalid.length > 1 ? 's' : ''}: ${invalid.join(', ')}`);
+  return [...new Set(tokens.map(Number))].sort((a, b) => a - b);
+}
+
+function createWatchGroup(name, uids) {
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error('Enter a group or user name.');
+  if (state.watchGroups.some((group) => group.name.toLowerCase() === normalizedName.toLowerCase())) {
+    throw new Error('A watched group with this name already exists.');
+  }
+  const group = { id: makeWatchGroupId(), name: normalizedName, uids };
+  state.watchGroups.push(group);
+  state.activeWatchGroupId = group.id;
+  state.watched = new Set(uids);
+  state.showWatchedOnly = false;
+  $('#watchedToggle').classList.remove('active');
+  renderWatchGroupSelect();
+  updateWatchedCount();
+  saveWatchlist();
+  renderMinersTable();
+}
+
+function updateWatchGroup(groupId, name, uids) {
+  const group = state.watchGroups.find((candidate) => candidate.id === groupId);
+  if (!group) throw new Error('The watched group no longer exists.');
+
+  const normalizedName = name.trim();
+  if (!normalizedName) throw new Error('Enter a group or user name.');
+  if (state.watchGroups.some((candidate) => (
+    candidate.id !== groupId && candidate.name.toLowerCase() === normalizedName.toLowerCase()
+  ))) {
+    throw new Error('A watched group with this name already exists.');
+  }
+
+  group.name = normalizedName;
+  group.uids = uids;
+  state.watched = new Set(uids);
+  renderWatchGroupSelect();
+  updateWatchedCount();
+  saveWatchlist();
+  renderMinersTable();
+}
+
+function deleteActiveWatchGroup() {
+  const groupIndex = state.watchGroups.findIndex((group) => group.id === state.activeWatchGroupId);
+  if (groupIndex < 0) return;
+
+  const group = state.watchGroups[groupIndex];
+  const uidLabel = `${group.uids.length} watched UID${group.uids.length === 1 ? '' : 's'}`;
+  if (!window.confirm(`Delete "${group.name}" and its ${uidLabel}? This cannot be undone.`)) return;
+
+  state.watchGroups.splice(groupIndex, 1);
+  if (!state.watchGroups.length) {
+    state.watchGroups.push({
+      id: makeWatchGroupId(),
+      name: 'My watched miners',
+      uids: [],
+    });
+  }
+
+  const nextGroup = state.watchGroups[Math.min(groupIndex, state.watchGroups.length - 1)];
+  state.activeWatchGroupId = nextGroup.id;
+  state.watched = new Set(nextGroup.uids);
+  state.showWatchedOnly = false;
+  $('#watchedToggle').classList.remove('active');
+  renderWatchGroupSelect();
+  updateWatchedCount();
+  saveWatchlist();
+  renderMinersTable();
 }
 
 function toggleWatch(uid) {
@@ -681,11 +835,200 @@ function toggleWatch(uid) {
   else state.watched.add(uid);
   updateWatchedCount();
   saveWatchlist();
+  renderWatchGroupSelect();
   renderMinersTable();
 }
 
 function updateWatchedCount() {
   $('#watchedCount').textContent = state.watched.size;
+}
+
+function openWatchGroupModal(group = null) {
+  editingWatchGroupId = group?.id || null;
+  $('#watchGroupForm').reset();
+  $('#watchGroupError').hidden = true;
+  $('#watchGroupModalTitle').textContent = group ? 'Edit watched group' : 'New watched group';
+  $('#watchGroupModalSubtitle').textContent = group
+    ? 'Update the group name and its watched miner UIDs.'
+    : 'Save a named set of miner UIDs in this browser.';
+  $('#watchGroupSubmit').textContent = group ? 'Save changes' : 'Create group';
+  if (group) {
+    $('#watchGroupName').value = group.name;
+    $('#watchGroupUids').value = group.uids.join(', ');
+  }
+  $('#watchGroupModalOverlay').hidden = false;
+  requestAnimationFrame(() => $('#watchGroupName').focus());
+}
+
+function openEditWatchGroupModal() {
+  const group = activeWatchGroup();
+  if (group) openWatchGroupModal(group);
+}
+
+function closeWatchGroupModal() {
+  $('#watchGroupModalOverlay').hidden = true;
+  editingWatchGroupId = null;
+}
+
+// ---------- Telegram probation alerts ----------
+async function loadTelegramSettings() {
+  try {
+    const saved = IS_EXTENSION && chrome.storage?.local
+      ? (await chrome.storage.local.get(TELEGRAM_SETTINGS_LOCAL_KEY))[TELEGRAM_SETTINGS_LOCAL_KEY]
+      : JSON.parse(localStorage.getItem(TELEGRAM_SETTINGS_LOCAL_KEY) || 'null');
+    if (saved && typeof saved.botToken === 'string' && typeof saved.chatId === 'string') {
+      state.telegram = { botToken: saved.botToken, chatId: saved.chatId };
+    }
+  } catch (err) {
+    console.warn('Could not read Telegram settings:', err);
+  }
+  updateTelegramSettingsIndicator();
+}
+
+async function saveTelegramSettings(settings) {
+  state.telegram = settings;
+  if (IS_EXTENSION && chrome.storage?.local) {
+    await chrome.storage.local.set({ [TELEGRAM_SETTINGS_LOCAL_KEY]: settings });
+  } else {
+    localStorage.setItem(TELEGRAM_SETTINGS_LOCAL_KEY, JSON.stringify(settings));
+  }
+  updateTelegramSettingsIndicator();
+}
+
+function loadProbationState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROBATION_STATE_LOCAL_KEY) || '{}');
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) state.probationByUid = saved;
+  } catch (err) {
+    console.warn('Could not read saved probation state:', err);
+    state.probationByUid = {};
+  }
+}
+
+function saveProbationState() {
+  localStorage.setItem(PROBATION_STATE_LOCAL_KEY, JSON.stringify(state.probationByUid));
+}
+
+function updateTelegramSettingsIndicator() {
+  const configured = Boolean(state.telegram.botToken && state.telegram.chatId);
+  const button = $('#settingsBtn');
+  button.classList.toggle('configured', configured);
+  button.title = configured ? 'Telegram alerts connected' : 'Telegram alert settings';
+}
+
+function openSettingsModal() {
+  $('#telegramBotToken').value = state.telegram.botToken;
+  $('#telegramChatId').value = state.telegram.chatId;
+  const status = $('#telegramConnectionStatus');
+  status.hidden = true;
+  status.className = 'connection-status';
+  $('#settingsModalOverlay').hidden = false;
+  requestAnimationFrame(() => $('#telegramBotToken').focus());
+}
+
+function closeSettingsModal() {
+  $('#settingsModalOverlay').hidden = true;
+}
+
+function validateTelegramSettings(botToken, chatId) {
+  const token = botToken.trim();
+  const chat = chatId.trim();
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) {
+    throw new Error('Enter a valid Telegram bot token from @BotFather.');
+  }
+  if (!chat || /\s/.test(chat)) throw new Error('Enter a valid Telegram chat ID or @channel username.');
+  return { botToken: token, chatId: chat };
+}
+
+async function sendTelegramMessage(text, settings = state.telegram) {
+  if (!settings.botToken || !settings.chatId) throw new Error('Telegram alerts are not configured.');
+
+  const url = IS_EXTENSION
+    ? `https://api.telegram.org/bot${settings.botToken}/sendMessage`
+    : '/api/telegram/send-message';
+  const body = IS_EXTENSION
+    ? { chat_id: settings.chatId, text }
+    : { bot_token: settings.botToken, chat_id: settings.chatId, text };
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  let result;
+  try {
+    result = await response.json();
+  } catch (_) {
+    throw new Error(`Telegram returned HTTP ${response.status}.`);
+  }
+  if (!response.ok || result.ok === false) {
+    throw new Error(result.description || result.error || `Telegram returned HTTP ${response.status}.`);
+  }
+  return result;
+}
+
+function allWatchedUids() {
+  return new Set(state.watchGroups.flatMap((group) => group.uids));
+}
+
+function watchedGroupNamesForUid(uid) {
+  return state.watchGroups.filter((group) => group.uids.includes(uid)).map((group) => group.name);
+}
+
+function checkForNewProbations() {
+  const watchedUids = allWatchedUids();
+  const currentByUid = new Map();
+  const minerByUid = new Map();
+
+  state.miners.forEach((miner) => {
+    if (!watchedUids.has(miner.uid)) return;
+    currentByUid.set(miner.uid, Boolean(currentByUid.get(miner.uid) || miner.on_probation));
+    if (!minerByUid.has(miner.uid)) minerByUid.set(miner.uid, miner);
+  });
+
+  const nextState = {};
+  const newProbations = [];
+  watchedUids.forEach((uid) => {
+    const key = String(uid);
+    if (!currentByUid.has(uid)) {
+      if (Object.hasOwn(state.probationByUid, key)) nextState[key] = state.probationByUid[key];
+      return;
+    }
+    const isOnProbation = currentByUid.get(uid);
+    const hadPreviousState = Object.hasOwn(state.probationByUid, key);
+    if (hadPreviousState && state.probationByUid[key] === false && isOnProbation) {
+      newProbations.push({ uid, miner: minerByUid.get(uid), groups: watchedGroupNamesForUid(uid) });
+    }
+    nextState[key] = isOnProbation;
+  });
+
+  state.probationByUid = nextState;
+  saveProbationState();
+  if (newProbations.length && state.telegram.botToken && state.telegram.chatId) {
+    notifyNewProbations(newProbations);
+  }
+}
+
+async function notifyNewProbations(events) {
+  const lines = ['⚠️ Verathos probation alert', ''];
+  events.forEach(({ uid, miner, groups }, index) => {
+    if (index) lines.push('');
+    lines.push(`UID ${uid} entered probation.`);
+    const hotkey = miner?.ss58_address || miner?.hotkey_ss58 || miner?.hotkey || miner?.address;
+    if (hotkey) lines.push(`Hotkey: ${hotkey}`);
+    lines.push(`Watched group${groups.length === 1 ? '' : 's'}: ${groups.join(', ')}`);
+  });
+  lines.push('', `Detected: ${new Date().toLocaleString()}`);
+
+  try {
+    await sendTelegramMessage(lines.join('\n').slice(0, 4000));
+  } catch (err) {
+    console.error('Could not send Telegram probation alert:', err);
+    events.forEach(({ uid }) => {
+      state.probationByUid[String(uid)] = false;
+    });
+    saveProbationState();
+  }
 }
 
 // ---------- render: top stat sections ----------
@@ -846,7 +1189,15 @@ function applyMinersFilter() {
     if (flagFilter === 'blacklisted' && !m.is_blacklisted) return false;
     if (flagFilter === 'tee' && !m.tee_enabled) return false;
     if (q) {
-      const hay = `${m.model_id} ${m.gpu_name} ${m.endpoint}`.toLowerCase();
+      const hay = [
+        m.ss58_address,
+        m.address,
+        m.hotkey,
+        m.hotkey_ss58,
+        m.model_id,
+        m.gpu_name,
+        m.endpoint,
+      ].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -1003,11 +1354,42 @@ function render(data) {
   populateUidFilter(state.miners);
   populateModelFilter(state.miners);
   renderMinersTable();
+  checkForNewProbations();
 }
 
 // ---------- events ----------
 function initEvents() {
   $('#refreshBtn').addEventListener('click', () => loadData());
+  $('#settingsBtn').addEventListener('click', openSettingsModal);
+  $('#settingsModalClose').addEventListener('click', closeSettingsModal);
+  $('#telegramSettingsCancel').addEventListener('click', closeSettingsModal);
+  $('#settingsModalOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#settingsModalOverlay')) closeSettingsModal();
+  });
+  $('#telegramSettingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const status = $('#telegramConnectionStatus');
+    const button = $('#telegramConnectBtn');
+    status.hidden = false;
+    status.className = 'connection-status';
+    status.textContent = 'Connecting and sending the initial message…';
+    button.disabled = true;
+    try {
+      const settings = validateTelegramSettings($('#telegramBotToken').value, $('#telegramChatId').value);
+      await sendTelegramMessage(
+        '✅ Verathos Dashboard connected.\nProbation alerts are enabled for all watched groups.',
+        settings,
+      );
+      await saveTelegramSettings(settings);
+      status.classList.add('success');
+      status.textContent = 'Connected. The initial Telegram message was sent successfully.';
+    } catch (err) {
+      status.classList.add('error');
+      status.textContent = err.message || String(err);
+    } finally {
+      button.disabled = false;
+    }
+  });
   $('#themeBtn').addEventListener('click', () => {
     const isDark = document.documentElement.classList.toggle('dark');
     localStorage.setItem('verathos-theme', isDark ? 'dark' : 'light');
@@ -1017,6 +1399,29 @@ function initEvents() {
     state.showWatchedOnly = !state.showWatchedOnly;
     $('#watchedToggle').classList.toggle('active', state.showWatchedOnly);
     renderMinersTable();
+  });
+  $('#watchGroupSelect').addEventListener('change', (e) => selectWatchGroup(e.target.value));
+  $('#newWatchGroupBtn').addEventListener('click', () => openWatchGroupModal());
+  $('#editWatchGroupBtn').addEventListener('click', openEditWatchGroupModal);
+  $('#deleteWatchGroupBtn').addEventListener('click', deleteActiveWatchGroup);
+  $('#watchGroupModalClose').addEventListener('click', closeWatchGroupModal);
+  $('#watchGroupCancel').addEventListener('click', closeWatchGroupModal);
+  $('#watchGroupModalOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#watchGroupModalOverlay')) closeWatchGroupModal();
+  });
+  $('#watchGroupForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const error = $('#watchGroupError');
+    try {
+      const name = $('#watchGroupName').value;
+      const uids = parseWatchGroupUids($('#watchGroupUids').value);
+      if (editingWatchGroupId) updateWatchGroup(editingWatchGroupId, name, uids);
+      else createWatchGroup(name, uids);
+      closeWatchGroupModal();
+    } catch (err) {
+      error.textContent = err.message || String(err);
+      error.hidden = false;
+    }
   });
 
   $('#minerSearch').addEventListener('input', () => renderMinersTable());
@@ -1062,6 +1467,8 @@ function initEvents() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('#debugModalOverlay').hidden) closeDebugModal();
+    if (e.key === 'Escape' && !$('#watchGroupModalOverlay').hidden) closeWatchGroupModal();
+    if (e.key === 'Escape' && !$('#settingsModalOverlay').hidden) closeSettingsModal();
   });
   $('#debugModalRefresh').addEventListener('click', () => loadDebugModal());
   $('#debugModalWindowSelect').addEventListener('change', (e) => {
@@ -1073,6 +1480,8 @@ function initEvents() {
 async function init() {
   initEvents();
   loadWatchlist();
+  await loadTelegramSettings();
+  loadProbationState();
   tickEpochCountdown();
   setInterval(tickEpochCountdown, 1000);
   await loadData();
