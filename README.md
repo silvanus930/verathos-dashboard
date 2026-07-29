@@ -18,6 +18,40 @@ after confirmation. Groups are stored in the current browser, and an
 existing single watchlist is migrated automatically. The miner search also
 matches full or partial hotkeys.
 
+## Quick model tests
+
+Every model card has a **Quick test** button. Enter a Verathos API key and run
+one or three normal inference requests to see success rate, average round-trip
+latency, effective output tokens per second, and proof status when returned by
+the gateway. The key is kept only for the current tab. The test dialog also
+configures request count, maximum output tokens, timeout, temperature, delay
+between requests, and prompt; those settings are reused by every model button
+for the rest of the tab session.
+
+The check is deliberately limited to three sequential requests and 64 output
+tokens per request. It is gateway-routed and does not target or flood individual
+miner endpoints. Requests can consume your Verathos balance.
+
+The same bounded check is available from Python:
+
+```powershell
+python -m src.main --model "MODEL_ID" --api-key "vrt_sk_YOUR_KEY" --requests 3 --max-tokens 64 --timeout 90 --temperature 0 --delay-ms 0
+```
+
+## Owned endpoint resilience checks
+
+Miner rows whose endpoint is listed in `owned-endpoints.json` show a **Test**
+button. The settings modal offers health load, unsigned authentication
+rejection, bounded request-body rejection, invalid-method rejection, or a full
+combined HTTP suite. Every case ends with a recovery probe. Health-load results
+include reachability, HTTP statuses, and average/p50/p95/max latency.
+
+The extension and local Python server both enforce the same ownership
+allowlist. Hard limits are 25 health requests, concurrency 5, a 64 KiB body
+check, 10-second request timeout, and a 1-second delay between waves. These
+checks measure the exposed Cloudflare/Runpod and application path; they are not
+packet-flood or origin kernel tests.
+
 ## Telegram probation alerts
 
 Open the gear button, enter a Telegram bot token and chat ID, then choose

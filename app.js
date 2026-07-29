@@ -7,12 +7,30 @@ const API_CANDIDATES = IS_EXTENSION
 const REFRESH_MS = 5 * 60 * 1000;
 const TELEGRAM_SETTINGS_LOCAL_KEY = 'verathos-telegram-settings';
 const PROBATION_STATE_LOCAL_KEY = 'verathos-watched-probation-state';
+const MODEL_TEST_API_URL = 'https://api.verathos.ai/v1/chat/completions';
+const MODEL_TEST_MAX_REQUESTS = 3;
+const MODEL_TEST_MAX_TOKENS = 64;
+const MODEL_TEST_MAX_TIMEOUT_SECONDS = 90;
+const MODEL_TEST_MAX_DELAY_MS = 5000;
+const MODEL_TEST_MAX_TEMPERATURE = 2;
+const ENDPOINT_TEST_MAX_REQUESTS = 25;
+const ENDPOINT_TEST_MAX_CONCURRENCY = 5;
+const ENDPOINT_TEST_MAX_PAYLOAD_BYTES = 65536;
 
-// Epoch timing isn't exposed by the API. Anchored against a known reference
-// point (next epoch boundary observed at 2026-07-21T05:52:36Z) and projected
-// forward using Bittensor's standard tempo (360 blocks × 12s ≈ 72min).
-const EPOCH_LENGTH_MS = 72 * 60 * 1000;
-const EPOCH_ANCHOR_MS = Date.UTC(2026, 6, 21, 5, 52, 26);
+const SUBNET_NETUID = 96;
+const SUBNET_TEMPO_BLOCKS = 360;
+const BLOCK_TIME_MS = 12 * 1000;
+const EPOCH_LENGTH_MS = SUBNET_TEMPO_BLOCKS * BLOCK_TIME_MS;
+const CHAIN_SYNC_MS = BLOCK_TIME_MS;
+const TIMESTAMP_NOW_STORAGE_KEY =
+  '0xf0c365c3cf59d671eb72da0e7a4113c49f1f0515f462cdcf84e0f1d6045dfcbb';
+const SUBNET_TEMPO_STORAGE_KEY =
+  '0x658faa385070e074c85bf6b568cf05557641384bb339f3758acddfd7053d33176000';
+const BLOCKS_SINCE_LAST_STEP_STORAGE_KEY =
+  '0x658faa385070e074c85bf6b568cf055563f934e48e59bf9413de427605faa0246000';
+const CHAIN_RPC_CANDIDATES = IS_EXTENSION
+  ? ['https://api.metagraph.sh/rpc/v1/finney', 'https://rpc.blockmachine.io']
+  : ['/api/chain-head'];
 
 const state = {
   data: null,
@@ -26,6 +44,19 @@ const state = {
   showWatchedOnly: false,
   telegram: { botToken: '', chatId: '' },
   probationByUid: {},
+  modelTestApiKey: '',
+  modelTest: { model: null, resultNode: null, running: false },
+  modelTestSettings: {
+    requestCount: 3,
+    maxTokens: 64,
+    timeoutSeconds: 90,
+    temperature: 0,
+    delayMs: 0,
+    prompt: 'Reply with a numbered list of exactly 40 short words about reliable distributed computing.',
+  },
+  ownedEndpoints: new Set(),
+  endpointTest: { endpoint: '', running: false },
+  epochTiming: { blockNumber: null, nextBoundaryMs: null },
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -70,24 +101,109 @@ function fmtDate(unixSec) {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 function fmtDuration(ms) {
-  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
   return `${h}h ${m}m ${s}s`;
 }
 
-// ---------- epoch countdown ----------
-function nextEpochBoundary(now) {
-  const epochsSinceAnchor = Math.floor((now - EPOCH_ANCHOR_MS) / EPOCH_LENGTH_MS);
-  return EPOCH_ANCHOR_MS + (epochsSinceAnchor + 1) * EPOCH_LENGTH_MS;
+// ---------- epoch countdown and standard time ----------
+function decodeLittleEndianHex(hex) {
+  const bytes = (hex || '').replace(/^0x/, '').match(/.{2}/g);
+  if (!bytes) throw new Error('Missing chain timestamp');
+  return Number(BigInt(`0x${bytes.reverse().join('')}`));
+}
+
+async function rpcCall(url, method, params = []) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  if (!response.ok) throw new Error(`Chain RPC HTTP ${response.status}`);
+  const payload = await response.json();
+  if (payload.error) throw new Error(payload.error.message || 'Chain RPC failed');
+  return payload.result;
+}
+
+async function fetchChainHead() {
+  let lastError;
+  for (const url of CHAIN_RPC_CANDIDATES) {
+    try {
+      if (url.startsWith('/')) {
+        const response = await fetch(url, { headers: { Accept: 'application/json' } });
+        if (!response.ok) throw new Error(`Chain proxy HTTP ${response.status}`);
+        return await response.json();
+      }
+
+      const blockHash = await rpcCall(url, 'chain_getFinalizedHead');
+      const header = await rpcCall(url, 'chain_getHeader', [blockHash]);
+      const blockNumber = Number.parseInt(header.number, 16);
+      const timestampHex = await rpcCall(url, 'state_getStorage', [TIMESTAMP_NOW_STORAGE_KEY, blockHash]);
+      const tempoHex = await rpcCall(url, 'state_getStorage', [SUBNET_TEMPO_STORAGE_KEY, blockHash]);
+      const blocksSinceLastStepHex = await rpcCall(
+        url,
+        'state_getStorage',
+        [BLOCKS_SINCE_LAST_STEP_STORAGE_KEY, blockHash],
+      );
+      return {
+        block_number: blockNumber,
+        block_timestamp_ms: decodeLittleEndianHex(timestampHex),
+        tempo: decodeLittleEndianHex(tempoHex),
+        blocks_since_last_step: decodeLittleEndianHex(blocksSinceLastStepHex),
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function syncEpochTiming() {
+  try {
+    const head = await fetchChainHead();
+    const blockNumber = Number(head.block_number);
+    const blockTimestampMs = Number(head.block_timestamp_ms);
+    const tempo = Number(head.tempo);
+    const blocksSinceLastStep = Number(head.blocks_since_last_step);
+    if (
+      !Number.isFinite(blockNumber) ||
+      !Number.isFinite(blockTimestampMs) ||
+      !Number.isFinite(tempo) ||
+      !Number.isFinite(blocksSinceLastStep)
+    ) {
+      throw new Error('Invalid chain head response');
+    }
+    const blocksRemaining = Math.max(0, tempo - blocksSinceLastStep);
+    state.epochTiming.blockNumber = blockNumber;
+    state.epochTiming.nextBoundaryMs = blockTimestampMs + blocksRemaining * BLOCK_TIME_MS;
+    $('#epochCountdownPill').title =
+      `${blocksRemaining} blocks until subnet ${SUBNET_NETUID}'s next epoch, ` +
+      'using the subnet’s live on-chain epoch counter and an estimated 12 seconds per block.';
+  } catch (error) {
+    console.error('Could not sync epoch timing with the Bittensor chain:', error);
+  }
 }
 
 function tickEpochCountdown() {
   const now = Date.now();
-  const remaining = nextEpochBoundary(now) - now;
-  $('#epochCountdown').textContent = fmtDuration(remaining);
-  $('#epochBarFill').style.width = `${(remaining / EPOCH_LENGTH_MS) * 100}%`;
+  const nextBoundaryMs = state.epochTiming.nextBoundaryMs;
+  const remaining = nextBoundaryMs == null ? null : nextBoundaryMs - now;
+  $('#epochCountdown').textContent = remaining == null ? '—' : fmtDuration(remaining);
+  $('#epochBarFill').style.width =
+    remaining == null ? '0%' : `${Math.max(0, Math.min(100, (remaining / EPOCH_LENGTH_MS) * 100))}%`;
+
+  const utcNow = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(now));
+  $('#standardTime').textContent = `UTC ${utcNow}`;
+  $('#standardTime').dateTime = new Date(now).toISOString();
+  $('#standardTime').title = new Date(now).toUTCString();
 }
 
 // ---------- fetching ----------
@@ -117,6 +233,19 @@ async function loadData({ silent = false } = {}) {
     setConnStatus(false);
     if (!silent) showError(err);
     console.error(err);
+  }
+}
+
+async function loadOwnedEndpoints() {
+  try {
+    const url = IS_EXTENSION ? chrome.runtime.getURL('owned-endpoints.json') : '/owned-endpoints.json';
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const endpoints = await response.json();
+    state.ownedEndpoints = new Set(endpoints.map((endpoint) => new URL(endpoint).origin));
+  } catch (error) {
+    state.ownedEndpoints = new Set();
+    console.error('Could not load owned endpoint allowlist:', error);
   }
 }
 
@@ -1085,6 +1214,341 @@ function renderUsageStats(u) {
   wrap.appendChild(statCard('Tokens (24h)', fmtCompact(u.tokens_24h)));
 }
 
+// ---------- bounded model inference checks ----------
+function openModelTestModal(model, resultNode) {
+  state.modelTest.model = model;
+  state.modelTest.resultNode = resultNode;
+  $('#modelTestModelName').textContent = model.name || model.model_id;
+  $('#modelTestApiKey').value = state.modelTestApiKey;
+  $('#modelTestRequestCount').value = state.modelTestSettings.requestCount;
+  $('#modelTestMaxTokens').value = state.modelTestSettings.maxTokens;
+  $('#modelTestTimeoutSeconds').value = state.modelTestSettings.timeoutSeconds;
+  $('#modelTestTemperature').value = state.modelTestSettings.temperature;
+  $('#modelTestDelayMs').value = state.modelTestSettings.delayMs;
+  $('#modelTestPrompt').value = state.modelTestSettings.prompt;
+  const status = $('#modelTestStatus');
+  status.hidden = true;
+  status.className = 'model-test-status';
+  status.textContent = '';
+  $('#modelTestModalOverlay').hidden = false;
+  requestAnimationFrame(() => (state.modelTestApiKey ? $('#modelTestRun') : $('#modelTestApiKey')).focus());
+}
+
+function closeModelTestModal() {
+  if (state.modelTest.running) return;
+  $('#modelTestModalOverlay').hidden = true;
+}
+
+function validateModelTestApiKey(value) {
+  const key = value.trim();
+  if (!/^vrt_sk_[A-Za-z0-9_-]{8,}$/.test(key)) {
+    throw new Error('Enter a valid Verathos API key beginning with vrt_sk_.');
+  }
+  return key;
+}
+
+function readModelTestNumber(selector, label, min, max, integer = false) {
+  const value = Number($(selector).value);
+  if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+    throw new Error(`${label} must be ${integer ? 'a whole number ' : ''}between ${min} and ${max}.`);
+  }
+  return value;
+}
+
+function waitForModelTestDelay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function sendModelTestRequest(modelId, apiKey, prompt, settings) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), settings.timeoutSeconds * 1000);
+  const startedAt = performance.now();
+  const payload = {
+    model: modelId,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: settings.temperature,
+    max_tokens: settings.maxTokens,
+    stream: false,
+  };
+
+  try {
+    const response = await fetch(IS_EXTENSION ? MODEL_TEST_API_URL : '/api/model-test', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...(IS_EXTENSION ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(IS_EXTENSION ? payload : {
+        api_key: apiKey,
+        timeout_seconds: settings.timeoutSeconds,
+        ...payload,
+      }),
+      signal: controller.signal,
+    });
+    const elapsedMs = performance.now() - startedAt;
+    let body;
+    try {
+      body = await response.json();
+    } catch (_) {
+      throw new Error(`Gateway returned HTTP ${response.status} with a non-JSON response.`);
+    }
+    if (!response.ok) {
+      const message = body?.error?.message || body?.error || body?.detail || `Gateway returned HTTP ${response.status}.`;
+      throw new Error(String(message));
+    }
+
+    const outputTokens = Number(body?.usage?.completion_tokens ?? body?.usage?.output_tokens ?? 0);
+    const proofVerified = body?.proof_verified ?? body?.verification?.proof_verified ?? null;
+    return {
+      elapsedMs,
+      outputTokens,
+      tokensPerSecond: outputTokens > 0 ? outputTokens / (elapsedMs / 1000) : null,
+      proofVerified,
+    };
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${settings.timeoutSeconds} seconds.`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function runModelTest() {
+  if (state.modelTest.running || !state.modelTest.model) return;
+
+  const status = $('#modelTestStatus');
+  const runButton = $('#modelTestRun');
+  const resultNode = state.modelTest.resultNode;
+  let apiKey;
+  let settings;
+  try {
+    apiKey = validateModelTestApiKey($('#modelTestApiKey').value);
+    settings = {
+      requestCount: readModelTestNumber(
+        '#modelTestRequestCount', 'Requests', 1, MODEL_TEST_MAX_REQUESTS, true,
+      ),
+      maxTokens: readModelTestNumber(
+        '#modelTestMaxTokens', 'Max output tokens', 1, MODEL_TEST_MAX_TOKENS, true,
+      ),
+      timeoutSeconds: readModelTestNumber(
+        '#modelTestTimeoutSeconds', 'Timeout', 5, MODEL_TEST_MAX_TIMEOUT_SECONDS, true,
+      ),
+      temperature: readModelTestNumber(
+        '#modelTestTemperature', 'Temperature', 0, MODEL_TEST_MAX_TEMPERATURE,
+      ),
+      delayMs: readModelTestNumber(
+        '#modelTestDelayMs', 'Delay', 0, MODEL_TEST_MAX_DELAY_MS, true,
+      ),
+      prompt: $('#modelTestPrompt').value.trim(),
+    };
+    if (!settings.prompt) throw new Error('Enter a test prompt.');
+  } catch (error) {
+    status.hidden = false;
+    status.className = 'model-test-status error';
+    status.textContent = error.message;
+    return;
+  }
+
+  state.modelTestApiKey = apiKey;
+  state.modelTestSettings = settings;
+  state.modelTest.running = true;
+  runButton.disabled = true;
+  status.hidden = false;
+  status.className = 'model-test-status';
+  if (resultNode) {
+    resultNode.className = 'model-test-summary';
+    resultNode.textContent = 'Testing…';
+  }
+
+  const successes = [];
+  const failures = [];
+  for (let index = 0; index < settings.requestCount; index += 1) {
+    status.textContent = `Running request ${index + 1} of ${settings.requestCount}…`;
+    try {
+      successes.push(await sendModelTestRequest(
+        state.modelTest.model.model_id,
+        apiKey,
+        settings.prompt,
+        settings,
+      ));
+    } catch (error) {
+      failures.push(error.message || String(error));
+    }
+    if (settings.delayMs && index < settings.requestCount - 1) {
+      status.textContent = `Waiting ${settings.delayMs}ms before request ${index + 2}…`;
+      await waitForModelTestDelay(settings.delayMs);
+    }
+  }
+
+  state.modelTest.running = false;
+  runButton.disabled = false;
+
+  if (!successes.length) {
+    const message = `0/${settings.requestCount} succeeded\n${failures[0] || 'The model test failed.'}`;
+    status.className = 'model-test-status error';
+    status.textContent = message;
+    if (resultNode) {
+      resultNode.className = 'model-test-summary bad';
+      resultNode.textContent = `Failed · ${failures[0] || 'no response'}`;
+    }
+    return;
+  }
+
+  const averageLatencyMs = successes.reduce((sum, run) => sum + run.elapsedMs, 0) / successes.length;
+  const speedRuns = successes.filter((run) => run.tokensPerSecond !== null);
+  const averageTokensPerSecond = speedRuns.length
+    ? speedRuns.reduce((sum, run) => sum + run.tokensPerSecond, 0) / speedRuns.length
+    : null;
+  const proofRuns = successes.filter((run) => run.proofVerified !== null);
+  const verifiedProofs = proofRuns.filter((run) => run.proofVerified === true).length;
+  const summaryParts = [
+    `${successes.length}/${settings.requestCount} succeeded`,
+    `${(averageLatencyMs / 1000).toFixed(2)}s avg`,
+  ];
+  if (averageTokensPerSecond !== null) summaryParts.push(`${averageTokensPerSecond.toFixed(1)} effective tok/s`);
+  if (proofRuns.length) summaryParts.push(`${verifiedProofs}/${proofRuns.length} proofs verified`);
+
+  const summary = summaryParts.join(' · ');
+  status.className = failures.length ? 'model-test-status' : 'model-test-status success';
+  status.textContent = `${summary}\nGateway-routed check; it does not isolate or flood an individual miner instance.`;
+  if (resultNode) {
+    resultNode.className = failures.length ? 'model-test-summary' : 'model-test-summary good';
+    resultNode.textContent = summary;
+  }
+}
+
+// ---------- owned endpoint resilience checks ----------
+function openEndpointTestModal(endpoint) {
+  const origin = new URL(endpoint).origin;
+  if (!state.ownedEndpoints.has(origin)) return;
+  state.endpointTest.endpoint = origin;
+  $('#endpointTestUrl').textContent = origin;
+  const status = $('#endpointTestStatus');
+  status.hidden = true;
+  status.className = 'model-test-status';
+  status.textContent = '';
+  $('#endpointTestModalOverlay').hidden = false;
+  requestAnimationFrame(() => $('#endpointTestRun').focus());
+}
+
+function isOwnedEndpoint(endpoint) {
+  try {
+    return state.ownedEndpoints.has(new URL(endpoint).origin);
+  } catch (_) {
+    return false;
+  }
+}
+
+function closeEndpointTestModal() {
+  if (state.endpointTest.running) return;
+  $('#endpointTestModalOverlay').hidden = true;
+}
+
+async function requestEndpointTest(endpoint, settings) {
+  if (IS_EXTENSION) {
+    const response = await chrome.runtime.sendMessage({
+      type: 'owned-endpoint-test',
+      endpoint,
+      settings,
+    });
+    if (!response?.ok) throw new Error(response?.error || 'Extension endpoint test failed.');
+    return response.result;
+  }
+
+  const response = await fetch('/api/endpoint-test', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint, settings }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || `Endpoint test returned HTTP ${response.status}.`);
+  return body;
+}
+
+function formatEndpointTestResult(result) {
+  const lines = [];
+  if (result.requests) {
+    const statusSummary = Object.entries(result.statuses)
+      .map(([status, count]) => `${status}: ${count}`)
+      .join(', ');
+    const latency = result.latency;
+    const latencySummary = latency.averageMs === null
+      ? 'no completed HTTP responses'
+      : `avg ${latency.averageMs}ms · p50 ${latency.p50Ms}ms · p95 ${latency.p95Ms}ms · max ${latency.maxMs}ms`;
+    lines.push(
+      `Health load: ${result.reached}/${result.requests} reached · ${result.healthy}/${result.requests} returned 2xx`,
+      `Statuses: ${statusSummary || 'none'}`,
+      `Latency: ${latencySummary}`,
+    );
+  }
+  (result.checks || []).forEach((check) => {
+    const status = check.result.reached
+      ? `HTTP ${check.result.status} in ${check.result.latencyMs}ms`
+      : `${check.result.error || 'network error'} after ${check.result.latencyMs}ms`;
+    lines.push(`${check.label}: ${status} · ${check.passed ? 'expected rejection' : 'review result'}`);
+  });
+  const recovery = result.recovery.healthy
+    ? `healthy (${result.recovery.status}, ${result.recovery.latencyMs}ms)`
+    : result.recovery.reached
+      ? `reached but unhealthy (${result.recovery.status}, ${result.recovery.latencyMs}ms)`
+      : `failed (${result.recovery.error || 'network error'})`;
+  lines.push(`Recovery probe: ${recovery}`);
+  return lines.join('\n');
+}
+
+async function runEndpointTest() {
+  if (state.endpointTest.running || !state.endpointTest.endpoint) return;
+  const status = $('#endpointTestStatus');
+  const runButton = $('#endpointTestRun');
+  let settings;
+  try {
+    settings = {
+      testCase: $('#endpointTestCase').value,
+      path: $('#endpointTestPath').value === '/' ? '/' : '/health',
+      requests: readModelTestNumber(
+        '#endpointTestRequests', 'Requests', 1, ENDPOINT_TEST_MAX_REQUESTS, true,
+      ),
+      concurrency: readModelTestNumber(
+        '#endpointTestConcurrency', 'Concurrency', 1, ENDPOINT_TEST_MAX_CONCURRENCY, true,
+      ),
+      timeoutMs: readModelTestNumber('#endpointTestTimeout', 'Timeout', 2000, 10000, true),
+      delayMs: readModelTestNumber('#endpointTestDelay', 'Delay', 0, 1000, true),
+      payloadBytes: readModelTestNumber(
+        '#endpointTestPayloadBytes', 'Body test size', 1024, ENDPOINT_TEST_MAX_PAYLOAD_BYTES, true,
+      ),
+    };
+  } catch (error) {
+    status.hidden = false;
+    status.className = 'model-test-status error';
+    status.textContent = error.message;
+    return;
+  }
+
+  state.endpointTest.running = true;
+  runButton.disabled = true;
+  status.hidden = false;
+  status.className = 'model-test-status';
+  status.textContent = `Running ${settings.requests} capped GET probes with concurrency ${settings.concurrency}…`;
+  try {
+    const result = await requestEndpointTest(state.endpointTest.endpoint, settings);
+    const loadPassed = !result.requests || result.healthy === result.requests;
+    const checksPassed = (result.checks || []).every((check) => check.passed);
+    status.className = result.recovery.healthy && loadPassed && checksPassed
+      ? 'model-test-status success'
+      : 'model-test-status';
+    status.textContent = formatEndpointTestResult(result);
+  } catch (error) {
+    status.className = 'model-test-status error';
+    status.textContent = error.message || String(error);
+  } finally {
+    state.endpointTest.running = false;
+    runButton.disabled = false;
+  }
+}
+
 // ---------- render: models ----------
 function renderModels(models, usageModels) {
   const wrap = $('#modelsGrid');
@@ -1122,6 +1586,18 @@ function renderModels(models, usageModels) {
         tokRow.appendChild(el('b', null, `${fmtCompact(usage.input_tokens)} / ${fmtCompact(usage.output_tokens)}`));
         card.appendChild(tokRow);
       }
+
+      const action = el('div', 'model-test-action');
+      const testButton = el('button', 'model-test-btn');
+      testButton.type = 'button';
+      testButton.title = `Run a bounded inference test for ${m.name || m.model_id}`;
+      testButton.setAttribute('aria-label', testButton.title);
+      testButton.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3h6M10 3v5l-5 9a3 3 0 0 0 2.6 4.5h8.8A3 3 0 0 0 19 17l-5-9V3"/><path d="M7.5 15h9"/></svg><span>Quick test</span>';
+      const result = el('span', 'model-test-summary', 'Not tested');
+      testButton.addEventListener('click', () => openModelTestModal(m, result));
+      action.appendChild(testButton);
+      action.appendChild(result);
+      card.appendChild(action);
       wrap.appendChild(card);
     });
 }
@@ -1335,6 +1811,18 @@ function renderMinersTable() {
     statusTd.appendChild(el('span', `status-pill ${statusClass}`, statusLabel));
     tr.appendChild(statusTd);
 
+    const testTd = el('td', 'test-col');
+    if (isOwnedEndpoint(m.endpoint)) {
+      const testBtn = el('button', 'debug-btn endpoint-test-btn', 'Test');
+      testBtn.type = 'button';
+      testBtn.title = `Run a capped resilience check for ${m.endpoint}`;
+      testBtn.addEventListener('click', () => openEndpointTestModal(m.endpoint));
+      testTd.appendChild(testBtn);
+    } else {
+      testTd.textContent = '—';
+    }
+    tr.appendChild(testTd);
+
     const debugTd = el('td', 'debug-col');
     if (m.uid !== null && m.uid !== undefined && m.model_index !== null && m.model_index !== undefined) {
       const debugBtn = el('button', 'debug-btn', 'Debug');
@@ -1386,6 +1874,24 @@ function initEvents() {
   $('#telegramSettingsCancel').addEventListener('click', closeSettingsModal);
   $('#settingsModalOverlay').addEventListener('click', (e) => {
     if (e.target === $('#settingsModalOverlay')) closeSettingsModal();
+  });
+  $('#modelTestModalClose').addEventListener('click', closeModelTestModal);
+  $('#modelTestCancel').addEventListener('click', closeModelTestModal);
+  $('#modelTestModalOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#modelTestModalOverlay')) closeModelTestModal();
+  });
+  $('#modelTestForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    runModelTest();
+  });
+  $('#endpointTestModalClose').addEventListener('click', closeEndpointTestModal);
+  $('#endpointTestCancel').addEventListener('click', closeEndpointTestModal);
+  $('#endpointTestModalOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#endpointTestModalOverlay')) closeEndpointTestModal();
+  });
+  $('#endpointTestForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    runEndpointTest();
   });
   $('#telegramSettingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1492,6 +1998,8 @@ function initEvents() {
     if (e.key === 'Escape' && !$('#debugModalOverlay').hidden) closeDebugModal();
     if (e.key === 'Escape' && !$('#watchGroupModalOverlay').hidden) closeWatchGroupModal();
     if (e.key === 'Escape' && !$('#settingsModalOverlay').hidden) closeSettingsModal();
+    if (e.key === 'Escape' && !$('#modelTestModalOverlay').hidden) closeModelTestModal();
+    if (e.key === 'Escape' && !$('#endpointTestModalOverlay').hidden) closeEndpointTestModal();
   });
   $('#debugModalRefresh').addEventListener('click', () => loadDebugModal());
   $('#debugModalWindowSelect').addEventListener('change', (e) => {
@@ -1502,11 +2010,14 @@ function initEvents() {
 
 async function init() {
   initEvents();
+  await loadOwnedEndpoints();
   loadWatchlist();
   await loadTelegramSettings();
   loadProbationState();
+  await syncEpochTiming();
   tickEpochCountdown();
   setInterval(tickEpochCountdown, 1000);
+  setInterval(syncEpochTiming, CHAIN_SYNC_MS);
   await loadData();
   setInterval(() => loadData({ silent: true }), REFRESH_MS);
 }

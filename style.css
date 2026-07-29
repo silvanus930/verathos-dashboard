@@ -166,7 +166,8 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas
 .muted { color: var(--muted-foreground); }
 .small { font-size: .78rem; }
 
-#epochCountdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+#epochCountdown, #standardTime { font-variant-numeric: tabular-nums; }
+#epochCountdown { font-weight: 600; }
 
 /* Sections */
 .section { margin-top: 40px; }
@@ -289,6 +290,40 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas
 .model-card .row b { color: var(--foreground); font-weight: 700; }
 .bar-track { height: 7px; background: var(--muted); border-radius: 999px; margin-top: 9px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--primary), var(--primary-2)); transition: width .4s ease; }
+.model-test-action {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 14px;
+}
+.model-test-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid color-mix(in oklch, var(--primary) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--primary) 9%, var(--card));
+  color: var(--primary);
+  cursor: pointer;
+  font-size: .74rem;
+  font-weight: 700;
+}
+.model-test-btn:hover { background: color-mix(in oklch, var(--primary) 16%, var(--card)); }
+.model-test-btn:disabled { cursor: wait; opacity: .65; }
+.model-test-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.model-test-summary { color: var(--muted-foreground); font-size: .72rem; line-height: 1.35; }
+.model-test-summary.good { color: var(--success); }
+.model-test-summary.bad { color: var(--error); }
 
 /* Tables */
 .table-wrap {
@@ -556,6 +591,7 @@ html.dark .select {
 #debugModelIndexInput { width: 180px; }
 
 .debug-col { text-align: center; }
+.test-col { text-align: center; }
 .debug-btn {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 4px 12px;
@@ -575,6 +611,21 @@ html.dark .select {
   transform: translateY(-1px);
 }
 .debug-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.endpoint-test-btn { color: var(--warning); }
+.endpoint-test-btn:hover {
+  background: color-mix(in oklch, var(--warning) 12%, var(--card));
+  border-color: color-mix(in oklch, var(--warning) 45%, var(--border));
+}
+.endpoint-test-modal { max-width: 620px; }
+.endpoint-test-notice {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklch, var(--warning) 42%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--warning) 9%, var(--card));
+  color: var(--warning);
+  font-size: .78rem;
+  line-height: 1.45;
+}
 
 /* Modal */
 .modal-overlay {
@@ -627,6 +678,53 @@ html.dark .select {
 .modal-body { padding: 20px 22px 28px; overflow-y: auto; }
 
 .watch-group-modal, .settings-modal { max-width: 520px; }
+.model-test-modal { max-width: 580px; }
+.model-test-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.model-test-form label { margin-top: 4px; font-size: .82rem; font-weight: 700; }
+.model-test-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 3px;
+}
+.model-test-settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+.model-test-settings-grid label:last-child { grid-column: 1 / -1; }
+.model-test-settings-grid .input { width: 100%; }
+.model-test-prompt { resize: vertical; min-height: 80px; font-family: inherit; }
+.model-test-status {
+  margin-top: 5px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: .8rem;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+.model-test-status.success {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success) 42%, var(--border));
+  background: color-mix(in oklch, var(--success) 9%, var(--card));
+}
+.model-test-status.error {
+  color: var(--error);
+  border-color: color-mix(in oklch, var(--error) 42%, var(--border));
+  background: color-mix(in oklch, var(--error) 9%, var(--card));
+}
+@media (max-width: 520px) {
+  .model-test-settings-grid { grid-template-columns: 1fr; }
+  .model-test-settings-grid label:last-child { grid-column: auto; }
+}
 .watch-group-form, .settings-form {
   display: flex;
   flex-direction: column;

@@ -27,9 +27,10 @@
           <span class="dot"></span> connecting…
         </span>
         <span id="epochPill" class="pill pill-muted">epoch —</span>
-        <span id="epochCountdownPill" class="pill pill-muted" title="Epochs aren't exposed by the API. Estimated from a fixed ~72-minute tempo, calibrated against a known reference timestamp — may drift slightly from the actual boundary.">
+        <span id="epochCountdownPill" class="pill pill-muted" title="Syncing subnet epoch timing from the Bittensor chain…">
           next epoch <span id="epochCountdown">—</span>
         </span>
+        <time id="standardTime" class="pill pill-muted mono" datetime="">UTC —</time>
         <span id="lastUpdated" class="muted small">—</span>
         <button id="refreshBtn" class="icon-btn" title="Refresh now">⟳</button>
         <button id="settingsBtn" class="icon-btn" type="button" title="Telegram alert settings" aria-label="Telegram alert settings">⚙</button>
@@ -103,6 +104,7 @@
               <th data-key="organic_requests">Reqs</th>
               <th data-key="avg_tok_s">Avg tok/s</th>
               <th class="status-col">Status</th>
+              <th class="test-col">Test</th>
               <th class="debug-col">Debug</th>
             </tr>
           </thead>
@@ -223,6 +225,113 @@
         <div class="watch-group-form-actions">
           <button id="watchGroupCancel" class="btn btn-ghost" type="button">Cancel</button>
           <button id="watchGroupSubmit" class="btn" type="submit">Create group</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="modelTestModalOverlay" class="modal-overlay" hidden>
+    <div class="debug-modal model-test-modal" role="dialog" aria-modal="true" aria-labelledby="modelTestModalTitle">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="modelTestModalTitle">Quick model test</h3>
+          <span id="modelTestModelName" class="muted small"></span>
+        </div>
+        <button id="modelTestModalClose" class="icon-btn" type="button" title="Close" aria-label="Close">×</button>
+      </div>
+      <form id="modelTestForm" class="modal-body model-test-form">
+        <label for="modelTestApiKey">Verathos API key</label>
+        <input id="modelTestApiKey" class="input" type="password" autocomplete="off" placeholder="vrt_sk_…" required />
+        <span class="muted small">Kept only for this dashboard tab. Requests may consume your Verathos balance.</span>
+        <div class="model-test-settings-grid">
+          <label>
+            <span>Requests</span>
+            <input id="modelTestRequestCount" class="input" type="number" min="1" max="3" step="1" value="3" required />
+          </label>
+          <label>
+            <span>Max output tokens</span>
+            <input id="modelTestMaxTokens" class="input" type="number" min="1" max="64" step="1" value="64" required />
+          </label>
+          <label>
+            <span>Timeout (seconds)</span>
+            <input id="modelTestTimeoutSeconds" class="input" type="number" min="5" max="90" step="1" value="90" required />
+          </label>
+          <label>
+            <span>Temperature</span>
+            <input id="modelTestTemperature" class="input" type="number" min="0" max="2" step="0.1" value="0" required />
+          </label>
+          <label>
+            <span>Delay between requests (ms)</span>
+            <input id="modelTestDelayMs" class="input" type="number" min="0" max="5000" step="100" value="0" required />
+          </label>
+        </div>
+        <label for="modelTestPrompt">Test prompt</label>
+        <textarea id="modelTestPrompt" class="input model-test-prompt" rows="3" maxlength="500">Reply with a numbered list of exactly 40 short words about reliable distributed computing.</textarea>
+        <span class="muted small">Hard limits: 3 sequential requests, 64 output tokens, 90 seconds per request, and 5 seconds delay.</span>
+        <div id="modelTestStatus" class="model-test-status" role="status" hidden></div>
+        <div class="watch-group-form-actions">
+          <button id="modelTestCancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button id="modelTestRun" class="btn" type="submit">Run quick test</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="endpointTestModalOverlay" class="modal-overlay" hidden>
+    <div class="debug-modal endpoint-test-modal" role="dialog" aria-modal="true" aria-labelledby="endpointTestModalTitle">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="endpointTestModalTitle">Owned endpoint resilience check</h3>
+          <span id="endpointTestUrl" class="muted small mono"></span>
+        </div>
+        <button id="endpointTestModalClose" class="icon-btn" type="button" title="Close" aria-label="Close">×</button>
+      </div>
+      <form id="endpointTestForm" class="modal-body model-test-form">
+        <div class="endpoint-test-notice">
+          Controlled HTTP checks only. These measure the exposed proxy/application path, not packet-level origin protection.
+        </div>
+        <label for="endpointTestCase">Test case</label>
+        <select id="endpointTestCase" class="input select">
+          <option value="health_load" selected>Health load and recovery</option>
+          <option value="auth_gate">Authentication rejection</option>
+          <option value="body_limit">Request body-size rejection</option>
+          <option value="method_rejection">Invalid-method rejection</option>
+          <option value="full_suite">Full controlled HTTP suite</option>
+        </select>
+        <div class="model-test-settings-grid">
+          <label>
+            <span>Probe path</span>
+            <select id="endpointTestPath" class="input select">
+              <option value="/health" selected>/health</option>
+              <option value="/">/</option>
+            </select>
+          </label>
+          <label>
+            <span>Total requests</span>
+            <input id="endpointTestRequests" class="input" type="number" min="1" max="25" step="1" value="10" required />
+          </label>
+          <label>
+            <span>Concurrency</span>
+            <input id="endpointTestConcurrency" class="input" type="number" min="1" max="5" step="1" value="2" required />
+          </label>
+          <label>
+            <span>Timeout (ms)</span>
+            <input id="endpointTestTimeout" class="input" type="number" min="2000" max="10000" step="500" value="5000" required />
+          </label>
+          <label>
+            <span>Delay between request waves (ms)</span>
+            <input id="endpointTestDelay" class="input" type="number" min="0" max="1000" step="100" value="100" required />
+          </label>
+          <label>
+            <span>Body-limit test size (bytes)</span>
+            <input id="endpointTestPayloadBytes" class="input" type="number" min="1024" max="65536" step="1024" value="16384" required />
+          </label>
+        </div>
+        <span class="muted small">Hard limits: 25 health requests, concurrency 5, 64 KiB body test, timeout 10 seconds, plus one recovery probe.</span>
+        <div id="endpointTestStatus" class="model-test-status" role="status" hidden></div>
+        <div class="watch-group-form-actions">
+          <button id="endpointTestCancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button id="endpointTestRun" class="btn" type="submit">Start resilience check</button>
         </div>
       </form>
     </div>
