@@ -351,6 +351,11 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas
 .data-table tbody tr { transition: background .12s ease; }
 .data-table tbody tr:hover { background: color-mix(in oklch, var(--primary) 6%, var(--secondary)); }
 .data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr.debug-row { cursor: pointer; }
+.data-table tbody tr.debug-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
 
 .badge {
   display: inline-flex; align-items: center; gap: 5px;
@@ -472,6 +477,12 @@ html.dark .select {
 .data-table tbody tr.watched {
   box-shadow: inset 3px 0 0 var(--warning);
 }
+.data-table tbody tr.uid-penalized {
+  background: color-mix(in oklch, var(--error) 7%, var(--card));
+}
+.data-table tbody tr.uid-penalized:hover {
+  background: color-mix(in oklch, var(--error) 12%, var(--card));
+}
 
 /* Miner-grouped rows */
 .data-table tbody tr.group-start td { border-top: 1px solid var(--border); }
@@ -480,6 +491,32 @@ html.dark .select {
 .cell-main { font-weight: 600; color: var(--foreground); }
 .cell-sub { font-size: .74rem; color: var(--muted-foreground); margin-top: 2px; }
 .cell-sub.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+.model-index-chip {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: .66rem;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
+.uid-probation-summary,
+.uid-penalty-label,
+.uid-penalty-checking {
+  margin-top: 3px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: .68rem;
+  font-weight: 700;
+}
+.uid-probation-summary { color: var(--muted-foreground); }
+.uid-probation-summary.has-probation { color: var(--warning); }
+.uid-value.blocked { color: var(--error); }
+.uid-penalty-label { color: var(--error); }
+.uid-penalty-checking { color: var(--muted-foreground); font-weight: 500; }
 
 .health-dot {
   display: inline-block;
@@ -489,8 +526,16 @@ html.dark .select {
 }
 .health-dot.up { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 22%, transparent); }
 .health-dot.down { background: var(--error); box-shadow: 0 0 0 3px color-mix(in oklch, var(--error) 20%, transparent); }
-
 .status-col { text-align: center; }
+.status-stack { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.status-detail {
+  max-width: 150px;
+  color: var(--muted-foreground);
+  font-size: .66rem;
+  white-space: normal;
+  line-height: 1.2;
+}
+.status-detail.penalty { color: var(--error); font-weight: 700; }
 
 .status-pill {
   display: inline-flex; align-items: center;
@@ -500,8 +545,10 @@ html.dark .select {
   font-weight: 700;
 }
 .status-pill.active { color: var(--success); background: color-mix(in oklch, var(--success) 16%, transparent); }
-.status-pill.probation { color: var(--error); background: color-mix(in oklch, var(--error) 16%, transparent); }
+.status-pill.probation { color: var(--warning); background: color-mix(in oklch, var(--warning) 16%, transparent); }
 .status-pill.blacklisted { color: var(--error); background: color-mix(in oklch, var(--error) 16%, transparent); }
+.status-pill.penalized { color: var(--error); background: color-mix(in oklch, var(--error) 20%, transparent); }
+.status-pill.unhealthy { color: var(--error); background: color-mix(in oklch, var(--error) 13%, transparent); }
 
 .tee-chip {
   display: inline-flex; align-items: center;
@@ -590,8 +637,6 @@ html.dark .select {
 #debugUidInput { width: 110px; }
 #debugModelIndexInput { width: 180px; }
 
-.debug-col { text-align: center; }
-.test-col { text-align: center; }
 .debug-btn {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 4px 12px;
@@ -611,11 +656,6 @@ html.dark .select {
   transform: translateY(-1px);
 }
 .debug-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
-.endpoint-test-btn { color: var(--warning); }
-.endpoint-test-btn:hover {
-  background: color-mix(in oklch, var(--warning) 12%, var(--card));
-  border-color: color-mix(in oklch, var(--warning) 45%, var(--border));
-}
 .endpoint-test-modal { max-width: 620px; }
 .endpoint-test-notice {
   padding: 10px 12px;

@@ -79,7 +79,7 @@
           </select>
           <select id="healthFilter" class="input select">
             <option value="">All health</option>
-            <option value="healthy">Healthy only</option>
+            <option value="healthy" selected>Healthy only</option>
             <option value="unhealthy">Unhealthy only</option>
           </select>
           <select id="flagFilter" class="input select">
@@ -96,16 +96,14 @@
             <tr>
               <th class="watch-col">Watch</th>
               <th>Miner</th>
-              <th data-key="uid">UID</th>
+              <th data-key="uid">UID / Probation</th>
               <th data-key="model_id">Model</th>
               <th data-key="gpu_name">GPU</th>
               <th data-key="healthy">Health</th>
               <th data-key="score">Score</th>
               <th data-key="organic_requests">Reqs</th>
               <th data-key="avg_tok_s">Avg tok/s</th>
-              <th class="status-col">Status</th>
-              <th class="test-col">Test</th>
-              <th class="debug-col">Debug</th>
+              <th class="status-col">Current status</th>
             </tr>
           </thead>
           <tbody></tbody>

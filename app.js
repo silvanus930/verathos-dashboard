@@ -57,6 +57,9 @@ const state = {
   ownedEndpoints: new Set(),
   endpointTest: { endpoint: '', running: false },
   epochTiming: { blockNumber: null, nextBoundaryMs: null },
+  uidPenaltyCache: new Map(),
+  uidPenaltyPending: new Map(),
+  uidPenaltyGeneration: 0,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -826,10 +829,19 @@ function watchedGroupScore(group) {
   }, 0);
 }
 
-function watchGroupLabel(group) {
+function watchedGroupInstanceCount(group, miners = state.miners) {
+  if (!state.miners.length || !group?.uids?.length) return null;
+  const uids = new Set(group.uids);
+  return miners.reduce((total, miner) => total + (uids.has(miner.uid) ? 1 : 0), 0);
+}
+
+function watchGroupLabel(group, miners) {
   const base = `${group.name} (${group.uids.length})`;
+  const instances = watchedGroupInstanceCount(group, miners);
   const score = watchedGroupScore(group);
-  return score === null ? base : `${base} - ${score.toFixed(1)}`;
+  return instances === null || score === null
+    ? base
+    : `${base} - ${instances} - ${score.toFixed(1)}`;
 }
 
 function loadWatchlist() {
@@ -880,14 +892,14 @@ function saveWatchlist() {
   }));
 }
 
-function renderWatchGroupSelect() {
+function renderWatchGroupSelect(miners = state.miners) {
   const select = $('#watchGroupSelect');
   if (!select) return;
   select.innerHTML = '';
   state.watchGroups.forEach((group) => {
     const option = el('option');
     option.value = group.id;
-    option.textContent = watchGroupLabel(group);
+    option.textContent = watchGroupLabel(group, miners);
     select.appendChild(option);
   });
   select.value = state.activeWatchGroupId || '';
@@ -1668,7 +1680,7 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-function applyMinersFilter() {
+function applyMinersFilter({ ignoreWatchedOnly = false } = {}) {
   const q = $('#minerSearch').value.trim().toLowerCase();
   const uidFilter = $('#uidFilter').value;
   const modelFilter = $('#modelFilter').value;
@@ -1676,7 +1688,7 @@ function applyMinersFilter() {
   const flagFilter = $('#flagFilter').value;
 
   return state.miners.filter((m) => {
-    if (state.showWatchedOnly && !state.watched.has(m.uid)) return false;
+    if (!ignoreWatchedOnly && state.showWatchedOnly && !state.watched.has(m.uid)) return false;
     if (uidFilter !== '' && String(m.uid) !== uidFilter) return false;
     if (modelFilter && m.model_id !== modelFilter) return false;
     if (healthFilter === 'healthy' && !m.healthy) return false;
@@ -1743,8 +1755,69 @@ function groupMinerRows(rows, sortKey, sortDir) {
   return flat;
 }
 
+function uidInstanceSummary(uid) {
+  const instances = state.miners.filter((miner) => miner.uid === uid);
+  return {
+    total: instances.length,
+    probationed: instances.filter((miner) => miner.on_probation).length,
+    blacklisted: instances.some((miner) => miner.is_blacklisted),
+  };
+}
+
+function normalizeUidListStatus(raw) {
+  const data = raw?.data || {};
+  return {
+    penalized: Boolean(data.uid_gate?.active),
+    convictedEntries: data.uid_gate?.convicted_entries ?? 0,
+    entryCount: data.uid_gate?.entry_count ?? 0,
+    entries: new Map((data.entries || []).map((entry) => [entry.model_index, entry])),
+  };
+}
+
+async function loadUidPenaltyStatuses(visibleMiners) {
+  const generation = state.uidPenaltyGeneration;
+  const visibleUids = [...new Set(
+    visibleMiners
+      .map((miner) => miner.uid)
+      .filter((uid) => uid !== null && uid !== undefined),
+  )];
+  const queue = visibleUids.filter((uid) => {
+    const summary = uidInstanceSummary(uid);
+    return (summary.probationed || summary.blacklisted)
+      && !state.uidPenaltyCache.has(uid)
+      && !state.uidPenaltyPending.has(uid);
+  });
+  if (!queue.length) return;
+
+  queue.forEach((uid) => state.uidPenaltyPending.set(uid, generation));
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < queue.length) {
+      const uid = queue[nextIndex++];
+      try {
+        const raw = await fetchMinerDebugUid(uid, 24);
+        if (generation === state.uidPenaltyGeneration) {
+          state.uidPenaltyCache.set(uid, normalizeUidListStatus(raw));
+        }
+      } catch (error) {
+        if (generation === state.uidPenaltyGeneration) {
+          state.uidPenaltyCache.set(uid, { error: true, penalized: false, entries: new Map() });
+        }
+        console.warn(`Could not load UID ${uid} penalty status:`, error);
+      } finally {
+        if (state.uidPenaltyPending.get(uid) === generation) state.uidPenaltyPending.delete(uid);
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+  if (generation === state.uidPenaltyGeneration) renderMinersTable();
+}
+
 function renderMinersTable() {
   const filtered = applyMinersFilter();
+  const groupCountMiners = applyMinersFilter({ ignoreWatchedOnly: true });
+  renderWatchGroupSelect(groupCountMiners);
   const rows = groupMinerRows(filtered, state.sortKey, state.sortDir);
   const shown = Math.min(rows.length, state.pageSize);
   $('#minerCount').textContent = `(${fmtInt(shown)} of ${fmtInt(rows.length)})`;
@@ -1755,8 +1828,30 @@ function renderMinersTable() {
   rows.slice(0, state.pageSize).forEach((m) => {
     const tr = el('tr');
     const isWatched = state.watched.has(m.uid);
+    const uidSummary = uidInstanceSummary(m.uid);
+    const uidDebug = state.uidPenaltyCache.get(m.uid);
+    const uidPenalized = uidSummary.blacklisted || Boolean(uidDebug?.penalized);
+    const debugEntry = uidDebug?.entries?.get(m.model_index);
+    const instancePenalized = Boolean(
+      debugEntry?.model_gate?.active || debugEntry?.capacity_audit?.gate_status?.active
+    );
     if (isWatched) tr.classList.add('watched');
     if (m.__groupStart) tr.classList.add('group-start');
+    if (uidPenalized) tr.classList.add('uid-penalized');
+    if (m.uid !== null && m.uid !== undefined && m.model_index !== null && m.model_index !== undefined) {
+      tr.classList.add('debug-row');
+      tr.tabIndex = 0;
+      tr.setAttribute('role', 'button');
+      tr.setAttribute('aria-label', `Debug UID ${m.uid}, model ${m.model_index}`);
+      const openRowDebug = (event) => {
+        if (event.target.closest('button, a, input, select, textarea')) return;
+        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.type === 'keydown') event.preventDefault();
+        openDebugModal(m.uid, m.model_index, 24);
+      };
+      tr.addEventListener('click', openRowDebug);
+      tr.addEventListener('keydown', openRowDebug);
+    }
 
     const watchTd = el('td', 'watch-cell');
     if (m.__groupStart && m.uid !== null && m.uid !== undefined) {
@@ -1776,12 +1871,38 @@ function renderMinersTable() {
     tr.appendChild(minerTd);
 
     const uidTd = el('td', 'mono');
-    if (m.__groupStart) uidTd.textContent = m.uid ?? '—';
+    if (m.__groupStart) {
+      uidTd.appendChild(el(
+        'div',
+        `cell-main uid-value${uidPenalized ? ' blocked' : ''}`,
+        m.uid ?? '—',
+      ));
+      if (m.uid !== null && m.uid !== undefined) {
+        const probationClass = uidSummary.probationed ? ' has-probation' : '';
+        uidTd.appendChild(el(
+          'div',
+          `uid-probation-summary${probationClass}`,
+          `${uidSummary.probationed}/${uidSummary.total} probation`,
+        ));
+        if (uidPenalized) {
+          uidTd.appendChild(el(
+            'div',
+            'uid-penalty-label',
+            uidSummary.blacklisted ? 'UID blacklisted' : 'UID penalized',
+          ));
+        } else if (uidSummary.probationed && !uidDebug) {
+          uidTd.appendChild(el('div', 'uid-penalty-checking', 'checking UID penalty…'));
+        }
+      }
+    }
     tr.appendChild(uidTd);
 
     const modelTd = el('td');
     const modelMain = el('span', 'cell-main', m.model_id.split('/').pop());
     modelTd.appendChild(modelMain);
+    if (m.model_index !== null && m.model_index !== undefined) {
+      modelTd.appendChild(el('span', 'model-index-chip', `#${m.model_index}`));
+    }
     modelTd.title = m.model_id;
     const ctxK = m.max_context_len ? Math.round(m.max_context_len / 1000) + 'k' : null;
     modelTd.appendChild(el('span', 'muted', ` ${[m.quant, ctxK].filter(Boolean).join(' ')}`));
@@ -1805,38 +1926,35 @@ function renderMinersTable() {
     tr.appendChild(el('td', null, m.healthy && m.avg_tok_s != null ? m.avg_tok_s.toFixed(1) : '—'));
 
     const statusTd = el('td', 'status-col');
-    let statusLabel = 'active', statusClass = 'active';
+    const statusStack = el('div', 'status-stack');
+    let statusLabel = 'healthy', statusClass = 'active';
     if (m.is_blacklisted) { statusLabel = 'blacklisted'; statusClass = 'blacklisted'; }
+    else if (instancePenalized) { statusLabel = 'penalized'; statusClass = 'penalized'; }
     else if (m.on_probation) { statusLabel = 'probation'; statusClass = 'probation'; }
-    statusTd.appendChild(el('span', `status-pill ${statusClass}`, statusLabel));
+    else if (!m.healthy) { statusLabel = 'unhealthy'; statusClass = 'unhealthy'; }
+    statusStack.appendChild(el('span', `status-pill ${statusClass}`, statusLabel));
+    if (uidDebug?.penalized && !m.is_blacklisted) {
+      statusStack.appendChild(el('span', 'status-detail penalty', 'UID penalized'));
+    } else if (m.on_probation) {
+      statusStack.appendChild(el('span', 'status-detail', 'recovery required'));
+    } else if (!m.healthy && m.consecutive_failures) {
+      statusStack.appendChild(el(
+        'span',
+        'status-detail',
+        `${fmtInt(m.consecutive_failures)} consecutive failures`,
+      ));
+    } else if (debugEntry?.issue_codes?.length) {
+      const primaryIssue = debugEntry.issue_codes.find((code) => code !== 'healthy');
+      if (primaryIssue) statusStack.appendChild(el('span', 'status-detail', issueInfo(primaryIssue).label));
+    }
+    statusTd.appendChild(statusStack);
     tr.appendChild(statusTd);
-
-    const testTd = el('td', 'test-col');
-    if (isOwnedEndpoint(m.endpoint)) {
-      const testBtn = el('button', 'debug-btn endpoint-test-btn', 'Test');
-      testBtn.type = 'button';
-      testBtn.title = `Run a capped resilience check for ${m.endpoint}`;
-      testBtn.addEventListener('click', () => openEndpointTestModal(m.endpoint));
-      testTd.appendChild(testBtn);
-    } else {
-      testTd.textContent = '—';
-    }
-    tr.appendChild(testTd);
-
-    const debugTd = el('td', 'debug-col');
-    if (m.uid !== null && m.uid !== undefined && m.model_index !== null && m.model_index !== undefined) {
-      const debugBtn = el('button', 'debug-btn', 'Debug');
-      debugBtn.type = 'button';
-      debugBtn.title = `Debug UID ${m.uid} · model #${m.model_index}`;
-      debugBtn.addEventListener('click', () => openDebugModal(m.uid, m.model_index, 24));
-      debugTd.appendChild(debugBtn);
-    }
-    tr.appendChild(debugTd);
 
     tbody.appendChild(tr);
   });
 
   updateSortIndicators();
+  void loadUidPenaltyStatuses(rows.slice(0, state.pageSize));
 }
 
 function updateSortIndicators() {
@@ -1858,6 +1976,9 @@ function render(data) {
   renderModels(data.models, data.usage_stats.models);
   renderValidators(data.validators);
 
+  state.uidPenaltyGeneration += 1;
+  state.uidPenaltyCache.clear();
+  state.uidPenaltyPending.clear();
   state.miners = data.miners.map(normalizeMiner);
   populateUidFilter(state.miners);
   populateModelFilter(state.miners);
